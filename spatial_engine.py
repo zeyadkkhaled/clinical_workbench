@@ -4,6 +4,7 @@ Purpose: Spatial filtering and geometric transformations from scratch.
 """
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 def _is_valid_image_array(image_array):
@@ -254,23 +255,64 @@ def local_histogram_equalization(image_array, block_size):
 
 def apply_2d_convolution(image_array, kernel):
     """Applies a 2D convolution with a given kernel."""
-    # TODO (Zeyad): Implement 2D convolution from scratch
-    return None
+    kernel_height, kernel_width = kernel.shape
+    pad_h = kernel_height // 2
+    pad_w = kernel_width // 2
+    
+    padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='constant', constant_values=0)
+    output = np.zeros_like(image_array, dtype=np.float64)
+    
+    for i in range(kernel_height):
+        for j in range(kernel_width):
+            output += padded_image[i:i+image_array.shape[0], j:j+image_array.shape[1]] * kernel[i, j]
+            
+    return output
 
-def apply_smoothing_filter(image_array):
+def apply_smoothing_filter(image_array, filter_type, kernel_size, variance=None):
     """Applies a spatial smoothing filter."""
-    # TODO (Zeyad): Implement smoothing filter using convolution
-    return None
+    if filter_type.lower() == 'average':
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.float64) / (kernel_size * kernel_size)
+    elif filter_type.lower() == 'gaussian':
+        if variance is None:
+            variance = 1.0
+        ax = np.linspace(-(kernel_size - 1) / 2., (kernel_size - 1) / 2., kernel_size)
+        gauss = np.exp(-0.5 * np.square(ax) / variance)
+        kernel = np.outer(gauss, gauss)
+        kernel /= np.sum(kernel)
+    else:
+        raise ValueError("Unsupported filter type. Use 'average' or 'gaussian'.")
+        
+    filtered = apply_2d_convolution(image_array, kernel)
+    return np.clip(filtered, 0, 255).astype(image_array.dtype)
 
-def apply_edge_detection(image_array):
+def apply_edge_detection(image_array, operator_type):
     """Applies a spatial edge detection filter."""
-    # TODO (Zeyad): Implement edge detection using convolution
-    return None
+    if operator_type.lower() == 'sobel':
+        kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float64)
+        ky = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float64)
+    elif operator_type.lower() == 'prewitt':
+        kx = np.array([[-1, 0, 1], [-1, 0, 1], [-1, 0, 1]], dtype=np.float64)
+        ky = np.array([[-1, -1, -1], [0, 0, 0], [1, 1, 1]], dtype=np.float64)
+    else:
+        raise ValueError("Unsupported operator. Use 'sobel' or 'prewitt'.")
+        
+    grad_x = apply_2d_convolution(image_array, kx)
+    grad_y = apply_2d_convolution(image_array, ky)
+    
+    magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    if magnitude.max() > 0:
+        magnitude = (magnitude / magnitude.max()) * 255
+        
+    return np.clip(magnitude, 0, 255).astype(np.uint8)
 
-def apply_median_filter(image_array):
+def apply_median_filter(image_array, kernel_size):
     """Applies a median filter."""
-    # TODO (Zeyad): Implement median filter
-    return None
+    pad_h = kernel_size // 2
+    pad_w = kernel_size // 2
+    padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='edge')
+    windows = sliding_window_view(padded_image, (kernel_size, kernel_size))
+    output = np.median(windows, axis=(2, 3))
+    return output.astype(image_array.dtype)
 
 def rotate_image(image_array, angle):
     """Rotates the image by a given angle."""

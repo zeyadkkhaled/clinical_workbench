@@ -1,26 +1,19 @@
-"""
-main.py
-Ownership: Zeyad
-Purpose: The entry point that initializes the CustomTkinter app and runs the main loop.
-"""
+# main.py
 import customtkinter as ctk
-from config import APP_TITLE, DEFAULT_WINDOW_SIZE
+from config import APP_TITLE, WINDOW_GEOMETRY, THEME_COLOR, APPEARANCE_MODE
 from ui_manager import UIManager
 
 def main():
-    # Set default theme and color
-    ctk.set_appearance_mode("System")
-    ctk.set_default_color_theme("blue")
+    ctk.set_appearance_mode(APPEARANCE_MODE)
+    ctk.set_default_color_theme(THEME_COLOR)
+
+    root = ctk.CTk()
+    root.title(APP_TITLE)
+    root.geometry(WINDOW_GEOMETRY)
     
-    app = ctk.CTk()
-    app.title(APP_TITLE)
-    app.geometry(DEFAULT_WINDOW_SIZE)
+    app = UIManager(root)
     
-    # Initialize the UI Manager
-    ui = UIManager(app)
-    
-    # Start the application loop
-    app.mainloop()
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
