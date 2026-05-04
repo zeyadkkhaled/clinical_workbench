@@ -145,22 +145,16 @@ def zoom_nearest_neighbor(image_array, scale):
         output_height = max(1, int(round(height * scale)))
         output_width = max(1, int(round(width * scale)))
 
-        if image.ndim == 2:
-            zoomed = np.zeros((output_height, output_width), dtype=np.uint8)
-        else:
-            zoomed = np.zeros((output_height, output_width, image.shape[2]), dtype=np.uint8)
+        output_y = np.arange(output_height)
+        output_x = np.arange(output_width)
 
-        for output_y in range(output_height):
-            source_y = output_y / scale
-            nearest_y = int(round(source_y))
-            nearest_y = min(max(nearest_y, 0), height - 1)
+        source_y = output_y / scale
+        source_x = output_x / scale
 
-            for output_x in range(output_width):
-                source_x = output_x / scale
-                nearest_x = int(round(source_x))
-                nearest_x = min(max(nearest_x, 0), width - 1)
+        nearest_y = np.clip(np.round(source_y).astype(int), 0, height - 1)
+        nearest_x = np.clip(np.round(source_x).astype(int), 0, width - 1)
 
-                zoomed[output_y, output_x] = image[nearest_y, nearest_x]
+        zoomed = image[nearest_y[:, np.newaxis], nearest_x[np.newaxis, :]]
 
         return zoomed
     except Exception:
@@ -186,33 +180,40 @@ def zoom_linear(image_array, scale):
         output_height = max(1, int(round(height * scale)))
         output_width = max(1, int(round(width * scale)))
 
-        if image.ndim == 2:
-            zoomed = np.zeros((output_height, output_width), dtype=np.float64)
+        output_y = np.arange(output_height)
+        output_x = np.arange(output_width)
+
+        source_y = output_y / scale
+        source_x = output_x / scale
+
+        y1 = np.clip(np.floor(source_y).astype(int), 0, height - 1)
+        y2 = np.clip(y1 + 1, 0, height - 1)
+        dy = source_y - y1
+
+        x1 = np.clip(np.floor(source_x).astype(int), 0, width - 1)
+        x2 = np.clip(x1 + 1, 0, width - 1)
+        dx = source_x - x1
+
+        y1_grid = y1[:, np.newaxis]
+        y2_grid = y2[:, np.newaxis]
+        x1_grid = x1[np.newaxis, :]
+        x2_grid = x2[np.newaxis, :]
+
+        top_left = source[y1_grid, x1_grid]
+        top_right = source[y1_grid, x2_grid]
+        bottom_left = source[y2_grid, x1_grid]
+        bottom_right = source[y2_grid, x2_grid]
+
+        if source.ndim == 3:
+            dy_grid = dy[:, np.newaxis, np.newaxis]
+            dx_grid = dx[np.newaxis, :, np.newaxis]
         else:
-            zoomed = np.zeros((output_height, output_width, image.shape[2]), dtype=np.float64)
+            dy_grid = dy[:, np.newaxis]
+            dx_grid = dx[np.newaxis, :]
 
-        for output_y in range(output_height):
-            source_y = output_y / scale
-            y1 = int(np.floor(source_y))
-            y2 = min(y1 + 1, height - 1)
-            y1 = min(max(y1, 0), height - 1)
-            dy = source_y - y1
-
-            for output_x in range(output_width):
-                source_x = output_x / scale
-                x1 = int(np.floor(source_x))
-                x2 = min(x1 + 1, width - 1)
-                x1 = min(max(x1, 0), width - 1)
-                dx = source_x - x1
-
-                top_left = source[y1, x1]
-                top_right = source[y1, x2]
-                bottom_left = source[y2, x1]
-                bottom_right = source[y2, x2]
-
-                top = (1.0 - dx) * top_left + dx * top_right
-                bottom = (1.0 - dx) * bottom_left + dx * bottom_right
-                zoomed[output_y, output_x] = (1.0 - dy) * top + dy * bottom
+        top = (1.0 - dx_grid) * top_left + dx_grid * top_right
+        bottom = (1.0 - dx_grid) * bottom_left + dx_grid * bottom_right
+        zoomed = (1.0 - dy_grid) * top + dy_grid * bottom
 
         return np.clip(np.rint(zoomed), 0, 255).astype(np.uint8)
     except Exception:
