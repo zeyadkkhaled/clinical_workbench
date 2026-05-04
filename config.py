@@ -9,6 +9,10 @@ UI_PADDING    = 10
 CORNER_RADIUS = 8
 SIDEBAR_WIDTH = 290
 
+# Safety limits
+MAX_PROCESSING_PIXELS = 40_000_000   # 40 MP — blocks catastrophically large zoom outputs
+MAX_ZOOM_SCALE        = 16.0         # hard cap on zoom scale factor
+
 # ── Color palette ──────────────────────────────────────────────────────────────
 CLR_BG_MAIN     = "#0d1117"
 CLR_BG_SIDEBAR  = "#161b22"
