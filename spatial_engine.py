@@ -4,6 +4,7 @@ Purpose: Spatial filtering and geometric transformations from scratch.
 """
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 def _is_valid_image_array(image_array):
@@ -79,28 +80,17 @@ def _rgb_to_grayscale(image_array):
 
 def _manual_histogram(block):
     """
-    Computes a 256-bin histogram manually for a uint8 image block.
+    Computes a 256-bin histogram manually for a uint8 image block using fast NumPy bincount.
     """
-    histogram = np.zeros(256, dtype=np.int64)
-    flat_block = block.ravel()
-
-    for value in flat_block:
-        histogram[int(value)] += 1
-
-    return histogram
+    return np.bincount(block.ravel(), minlength=256).astype(np.int64)
 
 
 def _equalize_block(block):
     """
-    Applies histogram equalization to one local uint8 block.
+    Applies histogram equalization to one local uint8 block using vectorized math.
     """
     histogram = _manual_histogram(block)
-    cdf = np.zeros(256, dtype=np.int64)
-
-    running_total = 0
-    for intensity in range(256):
-        running_total += histogram[intensity]
-        cdf[intensity] = running_total
+    cdf = np.cumsum(histogram).astype(np.int64)
 
     nonzero_cdf = cdf[cdf > 0]
     if nonzero_cdf.size == 0:
@@ -112,10 +102,8 @@ def _equalize_block(block):
     if total_pixels == cdf_min:
         return block.copy()
 
-    mapping = np.zeros(256, dtype=np.uint8)
-    for intensity in range(256):
-        equalized_value = (cdf[intensity] - cdf_min) * 255.0 / (total_pixels - cdf_min)
-        mapping[intensity] = np.uint8(np.clip(round(equalized_value), 0, 255))
+    equalized_values = (cdf - cdf_min) * 255.0 / (total_pixels - cdf_min)
+    mapping = np.clip(np.round(equalized_values), 0, 255).astype(np.uint8)
 
     return mapping[block]
 
@@ -144,24 +132,20 @@ def zoom_nearest_neighbor(image_array, scale):
         output_height = max(1, int(round(height * scale)))
         output_width = max(1, int(round(width * scale)))
 
-        if image.ndim == 2:
-            zoomed = np.zeros((output_height, output_width), dtype=np.uint8)
-        else:
-            zoomed = np.zeros((output_height, output_width, image.shape[2]), dtype=np.uint8)
+        output_y = np.arange(output_height)
+        output_x = np.arange(output_width)
 
-        for output_y in range(output_height):
-            source_y = output_y / scale
-            nearest_y = int(round(source_y))
-            nearest_y = min(max(nearest_y, 0), height - 1)
+        source_y = output_y / scale
+        source_x = output_x / scale
 
-            for output_x in range(output_width):
-                source_x = output_x / scale
-                nearest_x = int(round(source_x))
-                nearest_x = min(max(nearest_x, 0), width - 1)
+        nearest_y = np.clip(np.round(source_y).astype(int), 0, height - 1)
+        nearest_x = np.clip(np.round(source_x).astype(int), 0, width - 1)
 
-                zoomed[output_y, output_x] = image[nearest_y, nearest_x]
+        # Advanced indexing with broadcasting saves massive memory compared to meshgrids
+        zoomed = image[nearest_y[:, np.newaxis], nearest_x[np.newaxis, :]]
 
-        return zoomed
+        # Ensure the array is strictly C-contiguous before Pillow processes it
+        return np.ascontiguousarray(zoomed)
     except Exception:
         return None
 
@@ -180,40 +164,51 @@ def zoom_linear(image_array, scale):
         if image is None:
             return None
 
-        source = image.astype(np.float64)
+        # Use float32 to drastically reduce memory usage and prevent OOM crashes
+        source = image.astype(np.float32)
         height, width = source.shape[:2]
         output_height = max(1, int(round(height * scale)))
         output_width = max(1, int(round(width * scale)))
 
-        if image.ndim == 2:
-            zoomed = np.zeros((output_height, output_width), dtype=np.float64)
-        else:
-            zoomed = np.zeros((output_height, output_width, image.shape[2]), dtype=np.float64)
+        output_y = np.arange(output_height)
+        output_x = np.arange(output_width)
 
-        for output_y in range(output_height):
-            source_y = output_y / scale
-            y1 = int(np.floor(source_y))
-            y2 = min(y1 + 1, height - 1)
-            y1 = min(max(y1, 0), height - 1)
-            dy = source_y - y1
+        source_y = output_y / scale
+        source_x = output_x / scale
 
-            for output_x in range(output_width):
-                source_x = output_x / scale
-                x1 = int(np.floor(source_x))
-                x2 = min(x1 + 1, width - 1)
-                x1 = min(max(x1, 0), width - 1)
-                dx = source_x - x1
+        y1 = np.clip(np.floor(source_y).astype(int), 0, height - 1)
+        y2 = np.clip(y1 + 1, 0, height - 1)
+        dy = (source_y - y1).astype(np.float32)
 
-                top_left = source[y1, x1]
-                top_right = source[y1, x2]
-                bottom_left = source[y2, x1]
-                bottom_right = source[y2, x2]
+        x1 = np.clip(np.floor(source_x).astype(int), 0, width - 1)
+        x2 = np.clip(x1 + 1, 0, width - 1)
+        dx = (source_x - x1).astype(np.float32)
 
-                top = (1.0 - dx) * top_left + dx * top_right
-                bottom = (1.0 - dx) * bottom_left + dx * bottom_right
-                zoomed[output_y, output_x] = (1.0 - dy) * top + dy * bottom
+        y1_idx = y1[:, np.newaxis]
+        y2_idx = y2[:, np.newaxis]
+        x1_idx = x1[np.newaxis, :]
+        x2_idx = x2[np.newaxis, :]
 
-        return np.clip(np.rint(zoomed), 0, 255).astype(np.uint8)
+        dy_grid = dy[:, np.newaxis]
+        dx_grid = dx[np.newaxis, :]
+
+        if source.ndim == 3:
+            dy_grid = dy_grid[:, :, np.newaxis]
+            dx_grid = dx_grid[:, :, np.newaxis]
+
+        # Calculate sequentially to save memory! 
+        # Creating all 4 full grids simultaneously causes MemoryError on large images.
+        zoomed = source[y1_idx, x1_idx] * (1.0 - dx_grid)
+        zoomed += source[y1_idx, x2_idx] * dx_grid
+        zoomed *= (1.0 - dy_grid)
+
+        bottom = source[y2_idx, x1_idx] * (1.0 - dx_grid)
+        bottom += source[y2_idx, x2_idx] * dx_grid
+        bottom *= dy_grid
+
+        zoomed += bottom
+
+        return np.ascontiguousarray(np.clip(np.rint(zoomed), 0, 255).astype(np.uint8))
     except Exception:
         return None
 
@@ -254,23 +249,64 @@ def local_histogram_equalization(image_array, block_size):
 
 def apply_2d_convolution(image_array, kernel):
     """Applies a 2D convolution with a given kernel."""
-    # TODO (Zeyad): Implement 2D convolution from scratch
-    return None
+    kernel_height, kernel_width = kernel.shape
+    pad_h = kernel_height // 2
+    pad_w = kernel_width // 2
+    
+    padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='constant', constant_values=0)
+    output = np.zeros_like(image_array, dtype=np.float64)
+    
+    for i in range(kernel_height):
+        for j in range(kernel_width):
+            output += padded_image[i:i+image_array.shape[0], j:j+image_array.shape[1]] * kernel[i, j]
+            
+    return output
 
-def apply_smoothing_filter(image_array):
+def apply_smoothing_filter(image_array, filter_type, kernel_size, variance=None):
     """Applies a spatial smoothing filter."""
-    # TODO (Zeyad): Implement smoothing filter using convolution
-    return None
+    if filter_type.lower() == 'average':
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.float64) / (kernel_size * kernel_size)
+    elif filter_type.lower() == 'gaussian':
+        if variance is None:
+            variance = 1.0
+        ax = np.linspace(-(kernel_size - 1) / 2., (kernel_size - 1) / 2., kernel_size)
+        gauss = np.exp(-0.5 * np.square(ax) / variance)
+        kernel = np.outer(gauss, gauss)
+        kernel /= np.sum(kernel)
+    else:
+        raise ValueError("Unsupported filter type. Use 'average' or 'gaussian'.")
+        
+    filtered = apply_2d_convolution(image_array, kernel)
+    return np.clip(filtered, 0, 255).astype(image_array.dtype)
 
-def apply_edge_detection(image_array):
+def apply_edge_detection(image_array, operator_type):
     """Applies a spatial edge detection filter."""
-    # TODO (Zeyad): Implement edge detection using convolution
-    return None
+    if operator_type.lower() == 'sobel':
+        kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float64)
+        ky = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float64)
+    elif operator_type.lower() == 'prewitt':
+        kx = np.array([[-1, 0, 1], [-1, 0, 1], [-1, 0, 1]], dtype=np.float64)
+        ky = np.array([[-1, -1, -1], [0, 0, 0], [1, 1, 1]], dtype=np.float64)
+    else:
+        raise ValueError("Unsupported operator. Use 'sobel' or 'prewitt'.")
+        
+    grad_x = apply_2d_convolution(image_array, kx)
+    grad_y = apply_2d_convolution(image_array, ky)
+    
+    magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    if magnitude.max() > 0:
+        magnitude = (magnitude / magnitude.max()) * 255
+        
+    return np.clip(magnitude, 0, 255).astype(np.uint8)
 
-def apply_median_filter(image_array):
+def apply_median_filter(image_array, kernel_size):
     """Applies a median filter."""
-    # TODO (Zeyad): Implement median filter
-    return None
+    pad_h = kernel_size // 2
+    pad_w = kernel_size // 2
+    padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='edge')
+    windows = sliding_window_view(padded_image, (kernel_size, kernel_size))
+    output = np.median(windows, axis=(2, 3))
+    return output.astype(image_array.dtype)
 
 def rotate_image(image_array, angle):
     """Rotates the image by a given angle."""

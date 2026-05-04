@@ -123,17 +123,13 @@ def load_image(file_path):
                 with Image.open(file_path) as image:
                     image.load()
 
-                    # Keep grayscale as 2D and preserve common color channels.
-                    if image.mode in ("1", "L", "I", "I;16", "F"):
-                        readable_image = image.convert("L")
-                    elif image.mode == "RGBA":
-                        readable_image = image.convert("RGBA")
-                    else:
-                        readable_image = image.convert("RGB")
+                    # Force convert to grayscale to ensure pure NumPy engines only receive 2D arrays
+                    if image.mode != "L":
+                        image = image.convert("L")
 
-                    image_array = np.asarray(readable_image)
+                    image_array = np.asarray(image)
                     metadata = get_standard_image_metadata(
-                        readable_image, image_array, file_path
+                        image, image_array, file_path
                     )
                     return image_array, metadata, None
             except Exception:
