@@ -1,4 +1,5 @@
 # ui_manager.py
+import tkinter.messagebox as messagebox
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import numpy as np
@@ -221,10 +222,10 @@ class UIManager:
             self.current_image_array = new_image
             self.update_canvas(self.current_image_array)
         except Exception as e:
-            # Revert state push on failure
+            # Revert state push on failure and show error gracefully
             if self.image_history:
                 self.image_history.pop()
-            self.show_error(f"Failed to apply operation:\n{str(e)}")
+            messagebox.showerror("Engine Error", str(e))
 
     # -- Callbacks --
 
