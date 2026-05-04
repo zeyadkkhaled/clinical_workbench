@@ -80,28 +80,17 @@ def _rgb_to_grayscale(image_array):
 
 def _manual_histogram(block):
     """
-    Computes a 256-bin histogram manually for a uint8 image block.
+    Computes a 256-bin histogram manually for a uint8 image block using fast NumPy bincount.
     """
-    histogram = np.zeros(256, dtype=np.int64)
-    flat_block = block.ravel()
-
-    for value in flat_block:
-        histogram[int(value)] += 1
-
-    return histogram
+    return np.bincount(block.ravel(), minlength=256).astype(np.int64)
 
 
 def _equalize_block(block):
     """
-    Applies histogram equalization to one local uint8 block.
+    Applies histogram equalization to one local uint8 block using vectorized math.
     """
     histogram = _manual_histogram(block)
-    cdf = np.zeros(256, dtype=np.int64)
-
-    running_total = 0
-    for intensity in range(256):
-        running_total += histogram[intensity]
-        cdf[intensity] = running_total
+    cdf = np.cumsum(histogram).astype(np.int64)
 
     nonzero_cdf = cdf[cdf > 0]
     if nonzero_cdf.size == 0:
@@ -113,10 +102,8 @@ def _equalize_block(block):
     if total_pixels == cdf_min:
         return block.copy()
 
-    mapping = np.zeros(256, dtype=np.uint8)
-    for intensity in range(256):
-        equalized_value = (cdf[intensity] - cdf_min) * 255.0 / (total_pixels - cdf_min)
-        mapping[intensity] = np.uint8(np.clip(round(equalized_value), 0, 255))
+    equalized_values = (cdf - cdf_min) * 255.0 / (total_pixels - cdf_min)
+    mapping = np.clip(np.round(equalized_values), 0, 255).astype(np.uint8)
 
     return mapping[block]
 
@@ -154,9 +141,11 @@ def zoom_nearest_neighbor(image_array, scale):
         nearest_y = np.clip(np.round(source_y).astype(int), 0, height - 1)
         nearest_x = np.clip(np.round(source_x).astype(int), 0, width - 1)
 
+        # Advanced indexing with broadcasting saves massive memory compared to meshgrids
         zoomed = image[nearest_y[:, np.newaxis], nearest_x[np.newaxis, :]]
 
-        return zoomed
+        # Ensure the array is strictly C-contiguous before Pillow processes it
+        return np.ascontiguousarray(zoomed)
     except Exception:
         return None
 
@@ -175,7 +164,8 @@ def zoom_linear(image_array, scale):
         if image is None:
             return None
 
-        source = image.astype(np.float64)
+        # Use float32 to drastically reduce memory usage and prevent OOM crashes
+        source = image.astype(np.float32)
         height, width = source.shape[:2]
         output_height = max(1, int(round(height * scale)))
         output_width = max(1, int(round(width * scale)))
@@ -188,34 +178,37 @@ def zoom_linear(image_array, scale):
 
         y1 = np.clip(np.floor(source_y).astype(int), 0, height - 1)
         y2 = np.clip(y1 + 1, 0, height - 1)
-        dy = source_y - y1
+        dy = (source_y - y1).astype(np.float32)
 
         x1 = np.clip(np.floor(source_x).astype(int), 0, width - 1)
         x2 = np.clip(x1 + 1, 0, width - 1)
-        dx = source_x - x1
+        dx = (source_x - x1).astype(np.float32)
 
-        y1_grid = y1[:, np.newaxis]
-        y2_grid = y2[:, np.newaxis]
-        x1_grid = x1[np.newaxis, :]
-        x2_grid = x2[np.newaxis, :]
+        y1_idx = y1[:, np.newaxis]
+        y2_idx = y2[:, np.newaxis]
+        x1_idx = x1[np.newaxis, :]
+        x2_idx = x2[np.newaxis, :]
 
-        top_left = source[y1_grid, x1_grid]
-        top_right = source[y1_grid, x2_grid]
-        bottom_left = source[y2_grid, x1_grid]
-        bottom_right = source[y2_grid, x2_grid]
+        dy_grid = dy[:, np.newaxis]
+        dx_grid = dx[np.newaxis, :]
 
         if source.ndim == 3:
-            dy_grid = dy[:, np.newaxis, np.newaxis]
-            dx_grid = dx[np.newaxis, :, np.newaxis]
-        else:
-            dy_grid = dy[:, np.newaxis]
-            dx_grid = dx[np.newaxis, :]
+            dy_grid = dy_grid[:, :, np.newaxis]
+            dx_grid = dx_grid[:, :, np.newaxis]
 
-        top = (1.0 - dx_grid) * top_left + dx_grid * top_right
-        bottom = (1.0 - dx_grid) * bottom_left + dx_grid * bottom_right
-        zoomed = (1.0 - dy_grid) * top + dy_grid * bottom
+        # Calculate sequentially to save memory! 
+        # Creating all 4 full grids simultaneously causes MemoryError on large images.
+        zoomed = source[y1_idx, x1_idx] * (1.0 - dx_grid)
+        zoomed += source[y1_idx, x2_idx] * dx_grid
+        zoomed *= (1.0 - dy_grid)
 
-        return np.clip(np.rint(zoomed), 0, 255).astype(np.uint8)
+        bottom = source[y2_idx, x1_idx] * (1.0 - dx_grid)
+        bottom += source[y2_idx, x2_idx] * dx_grid
+        bottom *= dy_grid
+
+        zoomed += bottom
+
+        return np.ascontiguousarray(np.clip(np.rint(zoomed), 0, 255).astype(np.uint8))
     except Exception:
         return None
 

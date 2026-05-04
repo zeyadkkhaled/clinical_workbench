@@ -31,14 +31,12 @@ class UIManager:
         self.sidebar_frame = ctk.CTkScrollableFrame(self.master, width=300, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         
-        # 2. Main Canvas Frame
-        self.canvas_frame = ctk.CTkFrame(self.master, corner_radius=0)
+        # 2. Main Canvas Frame (Scrollable)
+        self.canvas_frame = ctk.CTkScrollableFrame(self.master, corner_radius=0)
         self.canvas_frame.grid(row=0, column=1, sticky="nsew", padx=UI_PADDING, pady=UI_PADDING)
-        self.canvas_frame.grid_rowconfigure(0, weight=1)
-        self.canvas_frame.grid_columnconfigure(0, weight=1)
         
         self.image_label = ctk.CTkLabel(self.canvas_frame, text="No Image Loaded", anchor="center")
-        self.image_label.grid(row=0, column=0, sticky="nsew")
+        self.image_label.pack(expand=True, fill="both")
         
         # 3. Right Panel (Metadata)
         self.right_panel = ctk.CTkFrame(self.master, width=250, corner_radius=0)
@@ -152,44 +150,29 @@ class UIManager:
     def show_info(self, message):
         messagebox.showinfo("Success", message)
 
-    def update_canvas(self, image_array):
-        """ Render NumPy array on CustomTkinter Canvas as an Image """
-        if image_array is None:
+    def refresh_canvas(self, new_numpy_array):
+        """ Render NumPy array on CustomTkinter Canvas as an Image with True 1:1 Mapping """
+        if new_numpy_array is None:
             return
             
         # Ensure correct type for PIL
-        if image_array.dtype != np.uint8:
+        if new_numpy_array.dtype != np.uint8:
             # Simple normalization to 0-255 if it's float or something else
-            img_min = image_array.min()
-            img_max = image_array.max()
+            img_min = new_numpy_array.min()
+            img_max = new_numpy_array.max()
             if img_max > img_min:
-                norm_array = ((image_array - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+                norm_array = ((new_numpy_array - img_min) / (img_max - img_min) * 255).astype(np.uint8)
             else:
-                norm_array = np.zeros_like(image_array, dtype=np.uint8)
+                norm_array = np.zeros_like(new_numpy_array, dtype=np.uint8)
         else:
-            norm_array = image_array
+            norm_array = new_numpy_array
 
         pil_image = Image.fromarray(norm_array)
-        
-        # Calculate aspect ratio to fit the canvas frame nicely
-        self.canvas_frame.update() # Get actual dimensions
-        cf_width = self.canvas_frame.winfo_width()
-        cf_height = self.canvas_frame.winfo_height()
-        
-        # Fallback if frame isn't fully drawn yet
-        if cf_width <= 1 or cf_height <= 1:
-            cf_width = 600
-            cf_height = 600
-            
-        # Optional: scale down image if too large for display purposes
         img_width, img_height = pil_image.size
-        ratio = min(cf_width / img_width, cf_height / img_height) * 0.95
-        new_width = max(int(img_width * ratio), 1)
-        new_height = max(int(img_height * ratio), 1)
         
-        ctk_img = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(new_width, new_height))
+        ctk_img = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(img_width, img_height))
         self.image_label.configure(image=ctk_img, text="")
-        self.image_label.image = ctk_img # keep reference
+        self.current_tk_image = ctk_img # keep reference to prevent GC
 
     def update_metadata_panel(self, metadata_dict):
         self.metadata_textbox.configure(state="normal")
@@ -220,7 +203,14 @@ class UIManager:
             if new_image is None:
                 raise ValueError("Engine returned None instead of an image array.")
             self.current_image_array = new_image
-            self.update_canvas(self.current_image_array)
+            
+            # Update the metadata panel to reflect the new dimensions
+            height, width = self.current_image_array.shape[:2]
+            self.metadata_dict["Width"] = str(width)
+            self.metadata_dict["Height"] = str(height)
+            self.update_metadata_panel(self.metadata_dict)
+            
+            self.refresh_canvas(self.current_image_array)
         except Exception as e:
             # Revert state push on failure and show error gracefully
             if self.image_history:
@@ -243,7 +233,7 @@ class UIManager:
                 self.image_history.clear()
                 self.metadata_dict = metadata
                 
-                self.update_canvas(self.current_image_array)
+                self.refresh_canvas(self.current_image_array)
                 self.update_metadata_panel(self.metadata_dict)
         except Exception as e:
             self.show_error(f"Error loading image:\n{str(e)}")
@@ -342,7 +332,7 @@ class UIManager:
             return
             
         self.current_image_array = self.image_history.pop()
-        self.update_canvas(self.current_image_array)
+        self.refresh_canvas(self.current_image_array)
 
     def on_reset(self):
         if self.original_image_array is None:
@@ -350,4 +340,4 @@ class UIManager:
             
         self.push_state()
         self.current_image_array = self.original_image_array.copy()
-        self.update_canvas(self.current_image_array)
+        self.refresh_canvas(self.current_image_array)
