@@ -1287,20 +1287,7 @@ class UIManager:
         threshold_val = int(self.threshold_slider.get())
         self._set_status(f"Applying threshold at {threshold_val} …", "busy")
 
-        t = threshold_val
-
-        def _do_threshold(img, thr=t):
-            if img.ndim == 3:
-                # Luminance conversion from scratch
-                r = img[:, :, 0].astype(np.float64)
-                g = img[:, :, 1].astype(np.float64)
-                b = img[:, :, 2].astype(np.float64)
-                gray = (0.299 * r + 0.587 * g + 0.114 * b).astype(np.uint8)
-            else:
-                gray = img.astype(np.uint8)
-            return (gray > thr).astype(np.uint8) * 255
-
-        ok = self.apply_action(_do_threshold)
+        ok = self.apply_action(morphology_engine.apply_threshold, threshold_val)
         if ok:
             self._set_status(f"Threshold applied at {threshold_val}. Image is now binary.", "success")
 
@@ -1338,19 +1325,15 @@ class UIManager:
 
         elif operation == "open":
             # Opening = Erosion  followed by  Dilation
-            ok = self._apply_compound_morph(
-                [morphology_engine.erode, morphology_engine.dilate], se, label,
-            )
+            ok = self.apply_action(morphology_engine.opening, se)
 
         elif operation == "close":
             # Closing = Dilation  followed by  Erosion
-            ok = self._apply_compound_morph(
-                [morphology_engine.dilate, morphology_engine.erode], se, label,
-            )
+            ok = self.apply_action(morphology_engine.closing, se)
 
         elif operation == "boundary":
-            # Boundary = current  −  erode(current)  (implemented in UI layer)
-            ok = self._apply_boundary_extraction(se, label)
+            # Boundary = current - erode(current), implemented in morphology_engine.py.
+            ok = self.apply_action(morphology_engine.extract_boundary, se)
 
         else:
             self._set_status("Unknown morphology operation.", "error")
