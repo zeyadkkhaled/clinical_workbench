@@ -1,4 +1,4 @@
-"""
+# Author: Ahmed Hassan Bahr (Data I/O, Interpolation & Statistics) - Complete Ownership
 image_io.py
 Ownership: Ahmed Hassan Bahr
 Purpose: Functions to handle loading/saving images, including DICOM metadata.
@@ -15,6 +15,7 @@ DICOM_EXTENSIONS = {".dcm", ".dicom"}
 SAVE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
+# Author: Ahmed Hassan Bahr
 def normalize_to_uint8(image_array):
     """
     Converts an image array to uint8 safely for display or saving.
@@ -54,6 +55,7 @@ def prepare_image_for_display(image_array):
     return normalize_to_uint8(image_array)
 
 
+# Author: Ahmed Hassan Bahr
 def extract_dicom_metadata(ds):
     """
     Extracts useful DICOM metadata while tolerating missing tags.
@@ -81,6 +83,7 @@ def extract_dicom_metadata(ds):
     }
 
 
+# Author: Ahmed Hassan Bahr
 def get_standard_image_metadata(image, image_array, file_path):
     """
     Builds metadata for standard image formats loaded by Pillow.
@@ -99,6 +102,7 @@ def get_standard_image_metadata(image, image_array, file_path):
     }
 
 
+# Author: Ahmed Hassan Bahr
 def load_image(file_path):
     """
     Loads a standard image or DICOM file.
@@ -168,6 +172,7 @@ def load_image(file_path):
     except Exception:
         return None, {}, "An unexpected error occurred while loading the image."
 
+# Author: Ahmed Hassan Bahr
 def save_image(image_array, file_path):
     """
     Saves a NumPy image array as PNG, JPEG/JPG, or BMP.

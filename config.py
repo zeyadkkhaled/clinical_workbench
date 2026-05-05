@@ -1,4 +1,4 @@
-# config.py
+# Author: Zeyad Khaled (System Architect & Core Engine) - Complete Ownership
 APP_TITLE       = "Clinical Image Analysis Workbench"
 WINDOW_GEOMETRY = "1400x900"
 

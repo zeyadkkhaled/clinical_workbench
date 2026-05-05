@@ -1,5 +1,5 @@
 """
-spatial_engine.py
+# Shared Module: Spatial Operations & Interpolation
 Purpose: Spatial filtering and geometric transformations from scratch.
 """
 
@@ -108,6 +108,7 @@ def _equalize_block(block):
     return mapping[block]
 
 
+# Author: Ahmed Hassan Bahr
 def zoom_nearest_neighbor(image_array, scale):
     """
     Zooms an image using nearest-neighbor interpolation from scratch.
@@ -149,6 +150,7 @@ def zoom_nearest_neighbor(image_array, scale):
     except Exception:
         return None
 
+# Author: Ahmed Hassan Bahr
 def zoom_linear(image_array, scale):
     """
     Zooms an image using manual bilinear interpolation.
@@ -212,6 +214,7 @@ def zoom_linear(image_array, scale):
     except Exception:
         return None
 
+# Author: Ahmed Hassan Bahr
 def local_histogram_equalization(image_array, block_size):
     """
     Applies local histogram equalization block by block from scratch.
@@ -247,6 +250,7 @@ def local_histogram_equalization(image_array, block_size):
     except Exception:
         return None
 
+# Author: Zeyad Khaled
 def apply_2d_convolution(image_array, kernel):
     """
     Applies a 2D convolution with a given kernel using sliding windows.
@@ -274,6 +278,7 @@ def apply_2d_convolution(image_array, kernel):
             
     return output
 
+# Author: Zeyad Khaled
 def apply_smoothing_filter(image_array, filter_type, kernel_size, variance=None):
     """
     Applies a spatial smoothing filter (Average or Gaussian) to reduce noise.
@@ -304,6 +309,7 @@ def apply_smoothing_filter(image_array, filter_type, kernel_size, variance=None)
     filtered = apply_2d_convolution(image_array, kernel)
     return np.clip(filtered, 0, 255).astype(image_array.dtype)
 
+# Author: Zeyad Khaled
 def apply_edge_detection(image_array, operator_type):
     """
     Applies a spatial edge detection filter (Sobel or Prewitt) using orthogonal gradients.
@@ -338,6 +344,7 @@ def apply_edge_detection(image_array, operator_type):
         
     return np.clip(magnitude, 0, 255).astype(np.uint8)
 
+# Author: Zeyad Khaled
 def apply_median_filter(image_array, kernel_size):
     """
     Applies a non-linear median filter.
@@ -358,11 +365,13 @@ def apply_median_filter(image_array, kernel_size):
     output = np.median(windows, axis=(2, 3))
     return output.astype(image_array.dtype)
 
+# Author: Youssra Hatem
 def rotate_image(image_array, angle):
     """Rotates the image by a given angle."""
     # TODO (Youssra): Implement rotation with custom bilinear interpolation
     return None
 
+# Author: Youssra Hatem
 def shear_image(image_array, shear_factor):
     """Shears the image by a given factor."""
     # TODO (Youssra): Implement shearing with custom bilinear interpolation

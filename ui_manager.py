@@ -1,4 +1,4 @@
-# ui_manager.py
+# Author: Zeyad Khaled (System Architect & Core Engine) - Complete Ownership
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -75,6 +75,7 @@ class UIManager:
     # Layout
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Author: Zeyad Khaled
     def setup_ui(self):
         self.master.grid_rowconfigure(0, weight=1)
         self.master.grid_rowconfigure(1, weight=0)
@@ -88,6 +89,7 @@ class UIManager:
         self._build_status_bar()
         self.build_sidebar_controls()
 
+    # Author: Zeyad Khaled
     def _build_sidebar(self):
         self.sidebar_frame = ctk.CTkScrollableFrame(
             self.master,
@@ -107,6 +109,7 @@ class UIManager:
             anchor="w",
         ).pack(fill="x", padx=12, pady=8)
 
+    # Author: Zeyad Khaled
     def _build_viewer(self):
         """
         Viewer = CTkFrame  (column 1, fills all available space)
@@ -330,6 +333,7 @@ class UIManager:
         label.pack(fill="both", expand=True, padx=10, pady=10)
         return label
 
+    # Author: Zeyad Khaled
     def _build_right_panel(self):
         self.right_panel = ctk.CTkFrame(
             self.master, width=250, corner_radius=0, fg_color=CLR_BG_SIDEBAR,
@@ -1355,6 +1359,7 @@ class UIManager:
         if ok:
             self._set_status(f"{label} applied ({shape} SE, size={size}).", "success")
 
+    # Author: Zeyad Khaled
     def on_undo(self):
         """Undo the last pipeline step.
 
@@ -1379,6 +1384,7 @@ class UIManager:
             f"Undo complete. {undoable} more step(s) can still be undone.", "info",
         )
 
+    # Author: Zeyad Khaled
     def on_reset(self):
         """Restore original image and clear the entire pipeline history."""
         if self.original_image_array is None:

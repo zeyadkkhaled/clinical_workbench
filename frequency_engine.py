@@ -1,5 +1,5 @@
 """
-frequency_engine.py
+# Shared Module: Frequency Domain & ROI (Phase 2)
 Purpose: Frequency domain operations.
 """
 

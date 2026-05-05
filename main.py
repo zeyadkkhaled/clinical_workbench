@@ -1,4 +1,4 @@
-# main.py
+# Author: Zeyad Khaled (System Architect & Core Engine) - Complete Ownership
 """
 Entry point for the Clinical Image Analysis Workbench.
 

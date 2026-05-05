@@ -1,11 +1,12 @@
 """
-morphology_engine.py
+# Shared Module: Morphological Operations
 Purpose: Morphological operations from scratch.
 """
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
+# Author: Zeyad Khaled
 def generate_structuring_element(shape_type, size):
     """
     Helper to generate Square and Cross Structuring Elements.
@@ -24,6 +25,7 @@ def generate_structuring_element(shape_type, size):
     else:
         raise ValueError("Unsupported shape type. Use 'square' or 'cross'.")
 
+# Author: Zeyad Khaled
 def erode(image_array, structuring_element):
     """
     Performs morphological erosion using a specified structuring element (SE).
@@ -53,6 +55,7 @@ def erode(image_array, structuring_element):
     
     return (output_bool * 255).astype(np.uint8) if is_uint8 else output_bool
 
+# Author: Zeyad Khaled
 def dilate(image_array, structuring_element):
     """
     Performs morphological dilation using a specified structuring element (SE).
@@ -80,6 +83,7 @@ def dilate(image_array, structuring_element):
     
     return (match * 255).astype(np.uint8) if is_uint8 else match
 
+# Author: Youssra Hatem
 def apply_threshold(image_array, threshold_value):
     """Binarizes the image based on a threshold."""
     # TODO (Youssra): Implement slider binarization and compound logic calling Zeyad's base functions
@@ -100,6 +104,7 @@ def apply_threshold(image_array, threshold_value):
 
     return binary_image
 
+# Author: Youssra Hatem
 def opening(image_array, structuring_element):
     """Performs morphological opening."""
     # TODO (Youssra): Implement slider binarization and compound logic calling Zeyad's base functions
@@ -112,6 +117,7 @@ def opening(image_array, structuring_element):
 
     return opened
 
+# Author: Youssra Hatem
 def closing(image_array, structuring_element):
     """Performs morphological closing."""
     # TODO (Youssra): Implement slider binarization and compound logic calling Zeyad's base functions
