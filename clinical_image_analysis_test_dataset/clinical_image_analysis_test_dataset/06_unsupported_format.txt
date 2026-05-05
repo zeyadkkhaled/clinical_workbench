@@ -1,0 +1,1 @@
+This is intentionally not an image. The app should reject it without collapsing into digital pudding.
