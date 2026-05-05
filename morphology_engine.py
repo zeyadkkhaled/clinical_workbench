@@ -25,7 +25,18 @@ def generate_structuring_element(shape_type, size):
         raise ValueError("Unsupported shape type. Use 'square' or 'cross'.")
 
 def erode(image_array, structuring_element):
-    """Performs morphological erosion."""
+    """
+    Performs morphological erosion using a specified structuring element (SE).
+    
+    Clinical Relevance:
+        Erosion strips away the outermost layer of pixels from binary objects. It is used to 
+        clean up 'salt' noise (small white artifacts) from thresholded masks, separate touching 
+        tumors, or shrink segmented regions to ensure we are strictly within tissue boundaries.
+        
+    Implementation Details:
+        - The SE defines the neighborhood. If all pixels under the SE are foreground, the 
+          center pixel is kept; otherwise it becomes background.
+    """
     is_uint8 = image_array.dtype == np.uint8
     bool_array = image_array > 127 if is_uint8 else image_array.astype(bool)
         
@@ -43,7 +54,18 @@ def erode(image_array, structuring_element):
     return (output_bool * 255).astype(np.uint8) if is_uint8 else output_bool
 
 def dilate(image_array, structuring_element):
-    """Performs morphological dilation."""
+    """
+    Performs morphological dilation using a specified structuring element (SE).
+    
+    Clinical Relevance:
+        Dilation adds a layer of pixels to the boundaries of binary objects. It is used to 
+        clean up 'pepper' noise (small black holes inside foreground objects), bridge gaps in 
+        fractured bone scans, or expand segmented regions.
+        
+    Implementation Details:
+        - The SE defines the neighborhood. If any pixel under the SE is foreground, the 
+          center pixel becomes foreground.
+    """
     is_uint8 = image_array.dtype == np.uint8
     bool_array = image_array > 127 if is_uint8 else image_array.astype(bool)
         
@@ -74,6 +96,17 @@ def closing(image_array, structuring_element):
     return None
 
 def extract_boundary(image_array, structuring_element):
-    """Extracts the boundary of objects in the image."""
+    """
+    Extracts the boundary of objects in the image.
+    
+    Clinical Relevance:
+        Isolates the outline of segmented anatomical structures (like a lung or a tumor). 
+        This boundary is critical for calculating morphological features such as perimeter, 
+        smoothness, or irregularity (which often indicates malignancy).
+        
+    Implementation Details:
+        - The boundary is obtained by subtracting the eroded image from the original image.
+          (Note: Base logic is implemented via UI wrappers).
+    """
     # TODO (Ahmed): Implement morphological boundary subtraction
     return None

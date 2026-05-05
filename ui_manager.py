@@ -29,11 +29,16 @@ from config import (
 )
 
 # ─── State model ──────────────────────────────────────────────────────────────
-#  image_history  = [loaded_copy, result1, result2, ...]
-#  current_image  = image_history[-1]   (always)
-#  original_image = never mutated after load
+#  State Management & Undo Logic:
+#  - image_history  = [loaded_copy, result1, result2, ...]
+#    This acts as our pipeline stack. Every time an engine returns a new array, 
+#    we append a safe .copy() here.
+#  - current_image  = image_history[-1]   (always)
+#    The UI engines always pull the active working image from the top of the stack.
+#  - original_image = never mutated after load. Safe anchor for full resets.
 #
 #  Undo:  pop history tail → current = new tail  (only if len > 1)
+#         This reverts the pipeline to the exact state before the last operation.
 #  Reset: history = [original_copy]  → current = original_copy
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -763,6 +768,14 @@ class UIManager:
 
         The array is never downscaled — scrollbars let the user pan around
         images larger than the viewport.
+        
+        Garbage Collection Prevention:
+        Tkinter's C-backend does not hold a reference to Python-created images. 
+        If the `ImageTk.PhotoImage` is assigned to a local variable, Python's 
+        garbage collector will destroy it when this function exits, resulting 
+        in a blank/white canvas. We prevent this by anchoring the image 
+        reference to `self._photo_image`, forcing it to stay alive in memory 
+        as long as the class instance exists.
         """
         if new_numpy_array is None:
             return

@@ -248,12 +248,24 @@ def local_histogram_equalization(image_array, block_size):
         return None
 
 def apply_2d_convolution(image_array, kernel):
-    """Applies a 2D convolution with a given kernel."""
+    """
+    Applies a 2D convolution with a given kernel using sliding windows.
+    
+    Clinical Relevance:
+        Convolution is the foundational operation for spatial filtering (blurring, sharpening) 
+        and feature extraction (edges) in medical images.
+        
+    Implementation Details:
+        - Padding: We use 'edge' padding rather than zero padding. Zero padding introduces 
+          artificial black borders which create false edges (ringing artifacts) during convolution. 
+          'edge' padding replicates the outermost pixels, maintaining continuity and preventing 
+          edge-effect distortions in clinical scans.
+    """
     kernel_height, kernel_width = kernel.shape
     pad_h = kernel_height // 2
     pad_w = kernel_width // 2
     
-    padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='constant', constant_values=0)
+    padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='edge')
     output = np.zeros_like(image_array, dtype=np.float64)
     
     for i in range(kernel_height):
@@ -263,7 +275,20 @@ def apply_2d_convolution(image_array, kernel):
     return output
 
 def apply_smoothing_filter(image_array, filter_type, kernel_size, variance=None):
-    """Applies a spatial smoothing filter."""
+    """
+    Applies a spatial smoothing filter (Average or Gaussian) to reduce noise.
+    
+    Clinical Relevance:
+        Used to suppress quantum mottle (noise) in X-rays or CT scans.
+        
+    Implementation Details:
+        - Average Filter: Uniformly blurs the image. While fast, it severely degrades 
+          sharp anatomical edges.
+        - Gaussian Filter: Uses a bell-curve (Gaussian) distribution controlled by `variance`.
+          A higher variance spreads the weights further out, increasing the blur. Unlike the 
+          average filter, it preserves lower-frequency edge structures better while still 
+          reducing high-frequency noise.
+    """
     if filter_type.lower() == 'average':
         kernel = np.ones((kernel_size, kernel_size), dtype=np.float64) / (kernel_size * kernel_size)
     elif filter_type.lower() == 'gaussian':
@@ -280,7 +305,21 @@ def apply_smoothing_filter(image_array, filter_type, kernel_size, variance=None)
     return np.clip(filtered, 0, 255).astype(image_array.dtype)
 
 def apply_edge_detection(image_array, operator_type):
-    """Applies a spatial edge detection filter."""
+    """
+    Applies a spatial edge detection filter (Sobel or Prewitt) using orthogonal gradients.
+    
+    Clinical Relevance:
+        Crucial for highlighting boundaries between different tissues (e.g., bone vs. soft tissue) 
+        or detecting the margins of lesions and tumors.
+        
+    Implementation Details:
+        - Matrices: We apply 3x3 gradient operators (kx for horizontal, ky for vertical edges).
+          Sobel places a higher weight (2) on the center pixel, offering better noise robustness 
+          than Prewitt.
+        - Magnitude Calculation: The final edge strength is computed as sqrt(grad_x^2 + grad_y^2). 
+          This vector magnitude captures edges in all directions (including diagonals), which 
+          is critical since anatomical structures are rarely perfectly horizontal or vertical.
+    """
     if operator_type.lower() == 'sobel':
         kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float64)
         ky = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float64)
@@ -300,7 +339,18 @@ def apply_edge_detection(image_array, operator_type):
     return np.clip(magnitude, 0, 255).astype(np.uint8)
 
 def apply_median_filter(image_array, kernel_size):
-    """Applies a median filter."""
+    """
+    Applies a non-linear median filter.
+    
+    Clinical Relevance:
+        Highly effective at removing 'salt and pepper' noise (isolated extreme pixel values) 
+        often seen in corrupted scans or faulty sensor acquisitions, without blurring sharp edges.
+        
+    Implementation Details:
+        - Optimizations: Instead of slow Python nested loops, we use `sliding_window_view` from 
+          NumPy to create a 4D view of local neighborhoods, allowing us to compute the median 
+          across the entire image simultaneously (axis=(2,3)).
+    """
     pad_h = kernel_size // 2
     pad_w = kernel_size // 2
     padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='edge')
