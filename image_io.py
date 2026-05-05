@@ -12,7 +12,7 @@ from PIL import Image
 
 STANDARD_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 DICOM_EXTENSIONS = {".dcm", ".dicom"}
-SAVE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+SAVE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".dcm", ".dicom"}
 
 
 # Author: Ahmed Hassan Bahr
@@ -72,14 +72,20 @@ def extract_dicom_metadata(ds):
 
     return {
         "Patient Name": get_value("PatientName"),
+        "Patient ID": get_value("PatientID"),
         "Patient Age": get_value("PatientAge"),
         "Modality": get_value("Modality"),
         "Body Part Examined": get_value("BodyPartExamined"),
+        "Study Description": get_value("StudyDescription"),
         "Width": columns if columns is not None else "N/A",
         "Height": rows if rows is not None else "N/A",
         "Bit Depth": bits if bits is not None else "N/A",
         "Samples Per Pixel": getattr(ds, "SamplesPerPixel", "N/A"),
         "Photometric Interpretation": get_value("PhotometricInterpretation"),
+        "Window Center": get_value("WindowCenter"),
+        "Window Width": get_value("WindowWidth"),
+        "Rescale Slope": get_value("RescaleSlope"),
+        "Rescale Intercept": get_value("RescaleIntercept"),
     }
 
 
@@ -100,6 +106,11 @@ def get_standard_image_metadata(image, image_array, file_path):
         "Bit Depth": image_array.dtype.itemsize * 8,
         "Image Mode": image.mode,
     }
+
+
+
+
+
 
 
 # Author: Ahmed Hassan Bahr
@@ -173,9 +184,9 @@ def load_image(file_path):
         return None, {}, "An unexpected error occurred while loading the image."
 
 # Author: Ahmed Hassan Bahr
-def save_image(image_array, file_path):
+def save_image(image_array, file_path, original_metadata=None):
     """
-    Saves a NumPy image array as PNG, JPEG/JPG, or BMP.
+    Saves a NumPy image array as PNG, JPEG/JPG, BMP.
 
     Returns:
         tuple: (success_boolean, message)

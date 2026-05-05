@@ -2,6 +2,7 @@
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+import os
 import threading
 import numpy as np
 from PIL import Image, ImageTk
@@ -1191,16 +1192,27 @@ class UIManager:
     def on_save_image(self):
         if not self._require_image():
             return
+        selected_filetype = tk.StringVar(value="PNG")
         path = filedialog.asksaveasfilename(
             title="Save Image",
             defaultextension=".png",
-            filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg"), ("BMP", "*.bmp")],
+            filetypes=[
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg"),
+                ("BMP", "*.bmp"),
+                
+            ],
+            typevariable=selected_filetype,
         )
         if not path:
             return
+        if not os.path.splitext(path)[1] and selected_filetype.get() == "DICOM":
+            path = f"{path}.dcm"
         self._set_status("Saving …", "busy")
         try:
-            success, msg = image_io.save_image(self.current_image_array, path)
+            success, msg = image_io.save_image(
+                self.current_image_array, path, self.metadata_dict
+            )
             if success:
                 self._set_status("Image saved.", "success")
                 messagebox.showinfo("Saved", msg)
