@@ -2,9 +2,11 @@
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+import threading
 import numpy as np
 from PIL import Image, ImageTk
 
+import ai_segmentation_engine
 import image_io
 import spatial_engine
 import morphology_engine
@@ -12,7 +14,9 @@ import morphology_engine
 from config import (
     UI_PADDING, CORNER_RADIUS, SIDEBAR_WIDTH,
     MAX_PROCESSING_PIXELS, MAX_ZOOM_SCALE,
+    AI_VIDEO_FRAME_STEP, AI_VIDEO_MAX_FRAMES,
     CLR_BG_MAIN, CLR_BG_SIDEBAR, CLR_BG_CARD, CLR_BG_CARD_HDR, CLR_BORDER,
+    CLR_AI_ACCENT, CLR_AI_PANEL, CLR_AI_CARD,
     CLR_ACCENT, CLR_ACCENT_HOVER, CLR_ACCENT_DIM,
     CLR_CYAN, CLR_CYAN_HOVER,
     CLR_TEXT_PRI, CLR_TEXT_SEC, CLR_TEXT_HDG,
@@ -44,10 +48,21 @@ class UIManager:
         self.image_history: list  = []    # always contains copies; never None
         self.metadata_dict        = {}
 
+        # Owner: Bahr - AI Segmentation Bonus
+        # AI state is intentionally separate from current_image_array/image_history.
+        self.ai_model             = None
+        self.ai_model_path        = None
+        self.ai_image             = None
+        self.ai_mask              = None
+        self.ai_overlay           = None
+        self.ai_video_path        = None
+        self.ai_video_results     = []
+
         # Canvas display references (GC anchors)
         self._photo_image          = None
         self._canvas_image_id      = None
         self._canvas_placeholder_id = None
+        self._ai_preview_photos     = {}
 
         self.setup_ui()
 
@@ -99,13 +114,30 @@ class UIManager:
         )
         self.viewer_frame.grid(row=0, column=1, sticky="nsew")
         self.viewer_frame.grid_rowconfigure(0, weight=1)
-        self.viewer_frame.grid_rowconfigure(1, weight=0)
         self.viewer_frame.grid_columnconfigure(0, weight=1)
-        self.viewer_frame.grid_columnconfigure(1, weight=0)
+
+        self.main_tabs = ctk.CTkTabview(
+            self.viewer_frame,
+            fg_color=CLR_BG_MAIN,
+            segmented_button_fg_color=CLR_BG_CARD_HDR,
+            segmented_button_selected_color=CLR_ACCENT,
+            segmented_button_selected_hover_color=CLR_ACCENT_HOVER,
+            segmented_button_unselected_color=CLR_BG_CARD,
+            segmented_button_unselected_hover_color=CLR_ACCENT_DIM,
+        )
+        self.main_tabs.grid(row=0, column=0, sticky="nsew")
+        self.pipeline_tab = self.main_tabs.add("Required Pipeline")
+        self.ai_tab = self.main_tabs.add("Polyp AI Detection")
+        self.pipeline_tab.configure(fg_color=CLR_BG_MAIN)
+        self.ai_tab.configure(fg_color=CLR_AI_PANEL)
+        self.pipeline_tab.grid_rowconfigure(0, weight=1)
+        self.pipeline_tab.grid_rowconfigure(1, weight=0)
+        self.pipeline_tab.grid_columnconfigure(0, weight=1)
+        self.pipeline_tab.grid_columnconfigure(1, weight=0)
 
         # Main canvas
         self.canvas = tk.Canvas(
-            self.viewer_frame,
+            self.pipeline_tab,
             bg=CLR_BG_MAIN,
             highlightthickness=0,
             bd=0,
@@ -115,7 +147,7 @@ class UIManager:
 
         # Scrollbars
         self.v_scroll = tk.Scrollbar(
-            self.viewer_frame,
+            self.pipeline_tab,
             orient="vertical",
             command=self.canvas.yview,
             bg=CLR_BG_CARD_HDR,
@@ -128,7 +160,7 @@ class UIManager:
         self.v_scroll.grid(row=0, column=1, sticky="ns")
 
         self.h_scroll = tk.Scrollbar(
-            self.viewer_frame,
+            self.pipeline_tab,
             orient="horizontal",
             command=self.canvas.xview,
             bg=CLR_BG_CARD_HDR,
@@ -161,6 +193,137 @@ class UIManager:
         self.canvas.bind("<ButtonPress-1>",      self._on_pan_start)
         self.canvas.bind("<B1-Motion>",          self._on_pan_move)
         self.canvas.bind("<Enter>",              lambda e: self.canvas.focus_set())
+        self._build_ai_tab()
+
+    # Owner: Zeyad - GUI / Pipeline Architecture
+    def _build_ai_tab(self):
+        """Build the isolated polyp AI workstation tab."""
+        self.ai_tab.grid_rowconfigure(1, weight=1)
+        self.ai_tab.grid_columnconfigure(0, weight=0)
+        self.ai_tab.grid_columnconfigure(1, weight=1)
+        self.ai_tab.grid_columnconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(self.ai_tab, fg_color=CLR_AI_PANEL, corner_radius=0)
+        header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(10, 6))
+        ctk.CTkLabel(
+            header,
+            text="Polyp AI Detection / Segmentation",
+            font=("Segoe UI", 20, "bold"),
+            text_color=CLR_AI_ACCENT,
+            anchor="w",
+        ).pack(side="left", padx=4)
+        self.ai_status_label = ctk.CTkLabel(
+            header,
+            text="Ready",
+            font=FONT_LABEL_BOLD,
+            text_color=CLR_TEXT_SEC,
+            anchor="e",
+        )
+        self.ai_status_label.pack(side="right", padx=4)
+
+        controls = self._make_ai_panel(self.ai_tab, "AI Controls")
+        controls.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=(0, 12))
+
+        upload_box = ctk.CTkFrame(
+            controls,
+            fg_color=CLR_BG_MAIN,
+            border_color=CLR_AI_ACCENT,
+            border_width=2,
+            corner_radius=8,
+        )
+        upload_box.pack(fill="x", padx=10, pady=(10, 8))
+        ctk.CTkLabel(
+            upload_box,
+            text="Drop-zone style upload\nimage or video for AI only",
+            font=FONT_LABEL_BOLD,
+            text_color=CLR_AI_ACCENT,
+            justify="center",
+        ).pack(fill="x", padx=12, pady=14)
+
+        self.ai_file_label = ctk.CTkLabel(
+            controls,
+            text="No AI file selected",
+            font=FONT_MONO,
+            text_color=CLR_TEXT_SEC,
+            wraplength=235,
+            justify="left",
+        )
+        self.ai_file_label.pack(fill="x", padx=10, pady=(0, 8))
+
+        self._op_btn(controls, "Upload Image", self.on_ai_upload_image, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
+        self._op_btn(controls, "Upload Video", self.on_ai_upload_video, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
+        self._op_btn(controls, "Load AI Model", self.on_ai_load_model, fg=CLR_SUCCESS, hover=CLR_SUCCESS_HVR)
+        self._op_btn(controls, "Analyze Image", self.on_ai_analyze_image, fg=CLR_AI_ACCENT, hover=CLR_SUCCESS_HVR)
+        self._op_btn(controls, "Analyze Video", self.on_ai_analyze_video, fg=CLR_AI_ACCENT, hover=CLR_SUCCESS_HVR)
+
+        self._muted_label(controls, "Video frame step")
+        self.ai_frame_step_input = self._styled_entry(controls, default=str(AI_VIDEO_FRAME_STEP))
+        self._muted_label(controls, "Max frames")
+        self.ai_max_frames_input = self._styled_entry(controls, default=str(AI_VIDEO_MAX_FRAMES))
+
+        self._op_btn(controls, "Show Mask", self.on_ai_show_mask, fg=CLR_ACCENT, hover=CLR_ACCENT_HOVER)
+        self._op_btn(controls, "Show Overlay", self.on_ai_show_overlay, fg=CLR_ACCENT, hover=CLR_ACCENT_HOVER)
+        self._op_btn(controls, "Save Result", self.on_ai_save_result, fg=CLR_WARNING, hover=CLR_WARNING_HVR)
+
+        original = self._make_ai_panel(self.ai_tab, "Original Image / Frame")
+        original.grid(row=1, column=1, sticky="nsew", padx=6, pady=(0, 12))
+        original.grid_rowconfigure(0, weight=1)
+        original.grid_columnconfigure(0, weight=1)
+        self.ai_original_preview = self._make_ai_preview_label(original, "No AI image loaded")
+
+        overlay = self._make_ai_panel(self.ai_tab, "Segmentation Overlay")
+        overlay.grid(row=1, column=2, sticky="nsew", padx=(6, 12), pady=(0, 12))
+        overlay.grid_rowconfigure(0, weight=1)
+        overlay.grid_columnconfigure(0, weight=1)
+        self.ai_overlay_preview = self._make_ai_preview_label(overlay, "Overlay preview")
+
+        bottom = ctk.CTkFrame(self.ai_tab, fg_color=CLR_AI_PANEL, corner_radius=0)
+        bottom.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 12))
+        bottom.grid_columnconfigure(0, weight=1)
+        bottom.grid_columnconfigure(1, weight=2)
+
+        mask_panel = self._make_ai_panel(bottom, "Mask Preview")
+        mask_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.ai_mask_preview = self._make_ai_preview_label(mask_panel, "Mask preview", height=170)
+
+        status_panel = self._make_ai_panel(bottom, "Diagnosis / Status")
+        status_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.ai_diagnosis_text = ctk.CTkTextbox(
+            status_panel,
+            height=150,
+            font=FONT_MONO,
+            fg_color=CLR_BG_MAIN,
+            text_color=CLR_TEXT_PRI,
+            corner_radius=8,
+            wrap="word",
+        )
+        self.ai_diagnosis_text.pack(fill="both", expand=True, padx=10, pady=10)
+        self.ai_diagnosis_text.insert("end", "Ready\nModel optional. Load a PyTorch inference model to run segmentation.")
+        self.ai_diagnosis_text.configure(state="disabled")
+
+    def _make_ai_panel(self, parent, title):
+        panel = ctk.CTkFrame(parent, fg_color=CLR_AI_CARD, border_color=CLR_BORDER, border_width=1, corner_radius=8)
+        ctk.CTkLabel(
+            panel,
+            text=title,
+            font=FONT_SECTION_HDG,
+            text_color=CLR_AI_ACCENT,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 0))
+        return panel
+
+    def _make_ai_preview_label(self, parent, text, height=360):
+        label = ctk.CTkLabel(
+            parent,
+            text=text,
+            font=FONT_LABEL,
+            text_color=CLR_TEXT_SEC,
+            fg_color=CLR_BG_MAIN,
+            corner_radius=8,
+            height=height,
+        )
+        label.pack(fill="both", expand=True, padx=10, pady=10)
+        return label
 
     def _build_right_panel(self):
         self.right_panel = ctk.CTkFrame(
@@ -539,6 +702,62 @@ class UIManager:
         self._set_status(message[:90], "success")
         messagebox.showinfo("Success", message)
 
+    # Owner: Zeyad - GUI / Pipeline Architecture
+    def _set_ai_status(self, message, level="info"):
+        colors = {
+            "info": CLR_TEXT_SEC,
+            "success": CLR_AI_ACCENT,
+            "warning": "#d29922",
+            "error": "#f85149",
+            "busy": CLR_TEXT_HDG,
+        }
+        self.ai_status_label.configure(text=message, text_color=colors.get(level, CLR_TEXT_SEC))
+        self._set_status(f"AI: {message}", level if level in {"success", "warning", "error", "busy"} else "info")
+        self.master.update_idletasks()
+
+    def _set_ai_diagnosis(self, message):
+        self.ai_diagnosis_text.configure(state="normal")
+        self.ai_diagnosis_text.delete("1.0", "end")
+        self.ai_diagnosis_text.insert("end", message)
+        self.ai_diagnosis_text.configure(state="disabled")
+
+    def _display_ai_preview(self, label, image_array, key, max_size=(520, 360)):
+        if image_array is None:
+            return
+
+        arr = np.asarray(image_array)
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        if arr.dtype != np.uint8:
+            mn, mx = arr.min(), arr.max()
+            if mx > mn:
+                arr = ((arr - mn) / (mx - mn) * 255).astype(np.uint8)
+            else:
+                arr = np.zeros_like(arr, dtype=np.uint8)
+        if arr.ndim == 3 and arr.shape[2] == 4:
+            arr = arr[:, :, :3]
+
+        pil_img = Image.fromarray(arr)
+        pil_img.thumbnail(max_size, Image.LANCZOS)
+        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
+        self._ai_preview_photos[key] = ctk_img
+        label.configure(image=ctk_img, text="")
+
+    def _parse_ai_video_limits(self):
+        try:
+            frame_step = max(1, int(self.ai_frame_step_input.get().strip()))
+            max_frames = max(1, int(self.ai_max_frames_input.get().strip()))
+        except ValueError:
+            self._set_ai_status("Video limits must be positive integers.", "error")
+            return None, None
+        return frame_step, max_frames
+
+    def _require_ai_model(self):
+        if self.ai_model is None:
+            self._set_ai_status("Load an AI model first.", "warning")
+            return False
+        return True
+
     def refresh_canvas(self, new_numpy_array):
         """Render a NumPy array on the tk.Canvas at 1:1 pixel ratio.
 
@@ -693,6 +912,235 @@ class UIManager:
     # ─────────────────────────────────────────────────────────────────────────
     # Callbacks  (names unchanged from original)
     # ─────────────────────────────────────────────────────────────────────────
+
+    # Owner: Bahr - AI Segmentation Bonus
+    def on_ai_upload_image(self):
+        path = filedialog.askopenfilename(
+            title="Select Endoscopy Image for AI",
+            filetypes=[
+                ("Images", "*.png *.jpg *.jpeg *.bmp *.dcm *.dicom"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            image_array, metadata, err = image_io.load_image(path)
+            if err:
+                self._set_ai_status("Image load failed.", "error")
+                messagebox.showerror("AI Image Load", err)
+                return
+            self.ai_image = image_array.copy()
+            self.ai_mask = None
+            self.ai_overlay = None
+            self.ai_video_path = None
+            self.ai_video_results = []
+            self.ai_file_label.configure(text=path)
+            self._display_ai_preview(self.ai_original_preview, self.ai_image, "ai_original")
+            self.ai_mask_preview.configure(image=None, text="Mask preview")
+            self.ai_overlay_preview.configure(image=None, text="Overlay preview")
+            h, w = self.ai_image.shape[:2]
+            self._set_ai_diagnosis(
+                f"AI image loaded\nSize: {w} x {h} px\nMetadata fields: {len(metadata)}\n\n"
+                "Load a model, then run Analyze Image."
+            )
+            self._set_ai_status("AI image loaded.", "success")
+            self.main_tabs.set("Polyp AI Detection")
+        except Exception as e:
+            self._set_ai_status("Image load failed.", "error")
+            messagebox.showerror("AI Image Load", str(e))
+
+    # Owner: Bahr - Data I/O
+    def on_ai_upload_video(self):
+        path = filedialog.askopenfilename(
+            title="Select Endoscopy Video for AI",
+            filetypes=[
+                ("Videos", "*.mp4 *.avi *.mov *.mkv"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            self.ai_video_path = ai_segmentation_engine.load_video_file(path)
+            self.ai_video_results = []
+            self.ai_file_label.configure(text=self.ai_video_path)
+            self._set_ai_diagnosis(
+                "AI video selected\n"
+                f"{self.ai_video_path}\n\n"
+                "Video analysis extracts limited frames only. Adjust frame_step/max_frames if needed."
+            )
+            self._set_ai_status("AI video selected.", "success")
+            self.main_tabs.set("Polyp AI Detection")
+        except Exception as e:
+            self._set_ai_status("Video load failed.", "error")
+            messagebox.showerror("AI Video Load", str(e))
+
+    # Owner: Bahr - AI Segmentation Bonus
+    def on_ai_load_model(self):
+        path = filedialog.askopenfilename(
+            title="Select PyTorch Segmentation Model",
+            filetypes=[
+                ("PyTorch Models", "*.pt *.pth *.torchscript"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        self._set_ai_status("Loading model...", "busy")
+        try:
+            self.ai_model = ai_segmentation_engine.load_segmentation_model(path, framework="pytorch")
+            self.ai_model_path = path
+            self._set_ai_diagnosis(
+                "Model loaded\n"
+                f"{path}\n\n"
+                "Ready for inference. If this is a checkpoint/state_dict, export a full scripted model."
+            )
+            self._set_ai_status("Model loaded.", "success")
+        except Exception as e:
+            self.ai_model = None
+            self._set_ai_status("Model load failed.", "error")
+            messagebox.showerror("AI Model Load", str(e))
+
+    # Owner: Bahr - AI Segmentation Bonus
+    def on_ai_analyze_image(self):
+        if self.ai_image is None:
+            self._set_ai_status("Upload an AI image first.", "warning")
+            return
+        if not self._require_ai_model():
+            return
+
+        self._set_ai_status("Running inference...", "busy")
+        try:
+            preprocessed = ai_segmentation_engine.preprocess_for_segmentation(self.ai_image)
+            raw_mask = ai_segmentation_engine.run_segmentation_inference(self.ai_model, preprocessed)
+            self.ai_mask = ai_segmentation_engine.postprocess_segmentation_mask(raw_mask, self.ai_image.shape)
+            self.ai_overlay = ai_segmentation_engine.create_segmentation_overlay(self.ai_image, self.ai_mask)
+            self.ai_video_results = []
+
+            area = int(np.count_nonzero(self.ai_mask))
+            total = int(self.ai_mask.size)
+            pct = (area / total * 100.0) if total else 0.0
+            self._display_ai_preview(self.ai_mask_preview, self.ai_mask, "ai_mask", max_size=(420, 170))
+            self._display_ai_preview(self.ai_overlay_preview, self.ai_overlay, "ai_overlay")
+            self._set_ai_diagnosis(
+                "Segmentation complete\n"
+                f"Positive mask pixels: {area:,}\n"
+                f"Estimated area: {pct:.2f}% of image\n\n"
+                "Use Show Mask, Show Overlay, or Save Result."
+            )
+            self._set_ai_status("Segmentation complete.", "success")
+        except Exception as e:
+            self._set_ai_status("Inference failed.", "error")
+            messagebox.showerror("AI Inference", str(e))
+
+    # Owner: Bahr - AI Segmentation Bonus
+    def on_ai_analyze_video(self):
+        if not self.ai_video_path:
+            self._set_ai_status("Upload an AI video first.", "warning")
+            return
+        if not self._require_ai_model():
+            return
+        frame_step, max_frames = self._parse_ai_video_limits()
+        if frame_step is None:
+            return
+
+        self._set_ai_status("Running video inference...", "busy")
+        self._set_ai_diagnosis("Video segmentation running...\nThe app is processing selected frames only.")
+
+        def progress(done, total, frame_index):
+            self.master.after(
+                0,
+                lambda: self._set_ai_status(
+                    f"Video inference {done}/{total} (frame {frame_index})", "busy"
+                ),
+            )
+
+        def worker():
+            try:
+                results = ai_segmentation_engine.run_video_segmentation(
+                    self.ai_model,
+                    self.ai_video_path,
+                    frame_step=frame_step,
+                    max_frames=max_frames,
+                    progress_callback=progress,
+                )
+                self.master.after(0, lambda: self._finish_ai_video_results(results))
+            except Exception as e:
+                self.master.after(0, lambda err=e: self._fail_ai_video_results(err))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_ai_video_results(self, results):
+        self.ai_video_results = results
+        if results:
+            first = results[0]
+            self.ai_image = first["image"]
+            self.ai_mask = first["mask"]
+            self.ai_overlay = first["overlay"]
+            self._display_ai_preview(self.ai_original_preview, self.ai_image, "ai_video_original")
+            self._display_ai_preview(self.ai_mask_preview, self.ai_mask, "ai_video_mask", max_size=(420, 170))
+            self._display_ai_preview(self.ai_overlay_preview, self.ai_overlay, "ai_video_overlay")
+        self._set_ai_diagnosis(
+            "Video segmentation complete\n"
+            f"Segmented frames: {len(results)}\n"
+            "Preview shows the first processed frame.\n\n"
+            "Use Save Result to export masks and overlays for all processed frames."
+        )
+        self._set_ai_status("Video segmentation complete.", "success")
+
+    def _fail_ai_video_results(self, error):
+        self._set_ai_status("Video inference failed.", "error")
+        messagebox.showerror("AI Video Inference", str(error))
+
+    # Owner: Bahr - AI Segmentation Bonus
+    def on_ai_show_mask(self):
+        if self.ai_mask is None:
+            self._set_ai_status("No mask available yet.", "warning")
+            return
+        self._display_ai_preview(self.ai_mask_preview, self.ai_mask, "ai_mask_show", max_size=(420, 170))
+        self._set_ai_status("Mask displayed.", "info")
+
+    # Owner: Bahr - AI Segmentation Bonus
+    def on_ai_show_overlay(self):
+        if self.ai_overlay is None:
+            self._set_ai_status("No overlay available yet.", "warning")
+            return
+        self._display_ai_preview(self.ai_overlay_preview, self.ai_overlay, "ai_overlay_show")
+        self._set_ai_status("Overlay displayed.", "info")
+
+    # Owner: Bahr - Data I/O
+    def on_ai_save_result(self):
+        if self.ai_mask is None or self.ai_overlay is None:
+            self._set_ai_status("No segmentation result to save.", "warning")
+            return
+        output_dir = filedialog.askdirectory(title="Choose Folder for Segmentation Output")
+        if not output_dir:
+            return
+        try:
+            if self.ai_video_results:
+                saved = ai_segmentation_engine.save_video_segmentation_outputs(
+                    self.ai_video_results, output_dir
+                )
+                self._set_ai_diagnosis(
+                    "Video outputs saved\n"
+                    f"Frames saved: {len(saved)}\n"
+                    f"Output folder: {output_dir}"
+                )
+            else:
+                saved = ai_segmentation_engine.save_segmentation_output(
+                    self.ai_mask, self.ai_overlay, output_dir
+                )
+                self._set_ai_diagnosis(
+                    "Image outputs saved\n"
+                    f"Mask: {saved['mask']}\n"
+                    f"Overlay: {saved['overlay']}"
+                )
+            self._set_ai_status("Segmentation output saved.", "success")
+            messagebox.showinfo("AI Output Saved", f"Saved segmentation outputs to:\n{output_dir}")
+        except Exception as e:
+            self._set_ai_status("Save failed.", "error")
+            messagebox.showerror("AI Save Result", str(e))
 
     def on_load_image(self):
         path = filedialog.askopenfilename(

@@ -13,6 +13,13 @@ SIDEBAR_WIDTH = 290
 MAX_PROCESSING_PIXELS = 40_000_000   # 40 MP — blocks catastrophically large zoom outputs
 MAX_ZOOM_SCALE        = 16.0         # hard cap on zoom scale factor
 
+# Owner: Bahr - AI Segmentation Bonus
+# Optional inference-only AI defaults. These do not affect the core pipeline.
+DEFAULT_AI_MODEL_PATH = ""
+AI_TARGET_SIZE        = (256, 256)
+AI_VIDEO_FRAME_STEP   = 10
+AI_VIDEO_MAX_FRAMES   = 100
+
 # ── Color palette ──────────────────────────────────────────────────────────────
 CLR_BG_MAIN     = "#0d1117"
 CLR_BG_SIDEBAR  = "#161b22"
@@ -26,6 +33,9 @@ CLR_ACCENT_DIM  = "#1e3058"
 
 CLR_CYAN        = "#0891b2"
 CLR_CYAN_HOVER  = "#0e7490"
+CLR_AI_ACCENT   = "#00e6aa"
+CLR_AI_PANEL    = "#071821"
+CLR_AI_CARD     = "#0b2230"
 
 CLR_TEXT_PRI    = "#e6edf3"
 CLR_TEXT_SEC    = "#8b949e"
