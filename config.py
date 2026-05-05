@@ -1,20 +1,9 @@
-"""
-config.py
-Ownership: Zeyad
-Purpose: Store shared constants, app title, default window size, supported formats, and default AI model paths.
-"""
-
+# config.py
 APP_TITLE = "Clinical Image Analysis Workbench"
-DEFAULT_WINDOW_SIZE = "1200x800"
+WINDOW_GEOMETRY = "1200x850"
 
-SUPPORTED_FORMATS = [
-    ("All supported", "*.jpg *.jpeg *.bmp *.png *.dcm"),
-    ("JPEG", "*.jpg *.jpeg"),
-    ("BMP", "*.bmp"),
-    ("PNG", "*.png"),
-    ("DICOM", "*.dcm")
-]
+THEME_COLOR = "dark-blue"
+APPEARANCE_MODE = "dark"
 
-DEFAULT_AI_MODEL_PATH = "models/segmentation_model.pth"
-
-# TODO (Zeyad): Add any other shared UI or theme constants here
+UI_PADDING = 10
+CORNER_RADIUS = 8
