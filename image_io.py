@@ -1,6 +1,6 @@
+"""
 # Author: Ahmed Hassan Bahr (Data I/O, Interpolation & Statistics) - Complete Ownership
 image_io.py
-Ownership: Ahmed Hassan Bahr
 Purpose: Functions to handle loading/saving images, including DICOM metadata.
 """
 
