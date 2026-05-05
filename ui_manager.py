@@ -608,6 +608,7 @@ class UIManager:
         c = self._make_card("Pipeline Controls")
         self.btn_undo  = self._op_btn(c, "⟵  Undo Last Step",   self.on_undo,  fg=CLR_WARNING, hover=CLR_WARNING_HVR)
         self.btn_reset = self._op_btn(c, "↺  Reset to Original", self.on_reset, fg=CLR_DANGER,  hover=CLR_DANGER_HVR)
+        self.btn_split = self._op_btn(c, "Toggle Split View", self.toggle_split_view, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status / info helpers
@@ -784,6 +785,9 @@ class UIManager:
         """
         if new_numpy_array is None:
             return
+
+        if getattr(self, "is_split_view", False):
+            self._update_split_view()
 
         # Normalize to uint8 for PIL
         if new_numpy_array.dtype != np.uint8:
@@ -1412,3 +1416,69 @@ class UIManager:
         self.refresh_canvas(self.current_image_array)
         self.update_metadata_panel(self.metadata_dict)
         self._set_status("Reset to original image. Pipeline history cleared.", "info")
+
+    def toggle_split_view(self):
+        if not hasattr(self, "is_split_view"):
+            self.is_split_view = False
+        
+        self.is_split_view = not self.is_split_view
+        
+        if self.is_split_view:
+            if not self._require_image():
+                self.is_split_view = False
+                return
+            
+            # Hide the main canvas and scrollbars
+            self.canvas.grid_remove()
+            self.v_scroll.grid_remove()
+            self.h_scroll.grid_remove()
+            
+            if not hasattr(self, "split_frame") or self.split_frame is None:
+                self.split_frame = ctk.CTkFrame(self.pipeline_tab, fg_color=CLR_BG_MAIN)
+                self.split_frame.grid_columnconfigure(0, weight=1)
+                self.split_frame.grid_columnconfigure(1, weight=1)
+                self.split_frame.grid_rowconfigure(0, weight=1)
+                
+                self.lbl_orig = ctk.CTkLabel(self.split_frame, text="Original", font=FONT_SECTION_HDG, compound="top")
+                self.lbl_orig.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+                
+                self.lbl_curr = ctk.CTkLabel(self.split_frame, text="Current", font=FONT_SECTION_HDG, compound="top")
+                self.lbl_curr.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+                
+            self.split_frame.grid(row=0, column=0, columnspan=2, rowspan=2, sticky="nsew")
+            self._update_split_view()
+            self._set_status("Split view ON.", "info")
+        else:
+            if hasattr(self, "split_frame") and self.split_frame is not None:
+                self.split_frame.grid_remove()
+            
+            self.canvas.grid(row=0, column=0, sticky="nsew")
+            self.v_scroll.grid(row=0, column=1, sticky="ns")
+            self.h_scroll.grid(row=1, column=0, sticky="ew")
+            self.refresh_canvas(self.current_image_array)
+            self._set_status("Split view OFF.", "info")
+
+    def _update_split_view(self):
+        if not getattr(self, "is_split_view", False) or not hasattr(self, "split_frame"):
+            return
+            
+        if self.original_image_array is None or self.current_image_array is None:
+            return
+
+        def array_to_ctk(arr):
+            if arr.dtype != np.uint8:
+                mn, mx = arr.min(), arr.max()
+                if mx > mn:
+                    arr = ((arr - mn) / (mx - mn) * 255).astype(np.uint8)
+                else:
+                    arr = np.zeros_like(arr, dtype=np.uint8)
+            pil_img = Image.fromarray(arr)
+            # Maximum size per half for split view while maintaining aspect ratio
+            pil_img.thumbnail((500, 500), Image.LANCZOS)
+            return ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
+
+        self._split_img_orig = array_to_ctk(self.original_image_array)
+        self._split_img_curr = array_to_ctk(self.current_image_array)
+        
+        self.lbl_orig.configure(image=self._split_img_orig)
+        self.lbl_curr.configure(image=self._split_img_curr)
