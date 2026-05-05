@@ -83,17 +83,46 @@ def dilate(image_array, structuring_element):
 def apply_threshold(image_array, threshold_value):
     """Binarizes the image based on a threshold."""
     # TODO (Youssra): Implement slider binarization and compound logic calling Zeyad's base functions
-    return None
+    # Ensure input is numpy array
+    image_array = np.array(image_array)
+
+    # Create output array
+    binary_image = np.zeros_like(image_array, dtype=np.uint8)
+
+    # Apply threshold
+    rows, cols = image_array.shape
+    for i in range(rows):
+        for j in range(cols):
+            if image_array[i, j] > threshold_value:
+                binary_image[i, j] = 255
+            else:
+                binary_image[i, j] = 0
+
+    return binary_image
 
 def opening(image_array, structuring_element):
     """Performs morphological opening."""
     # TODO (Youssra): Implement slider binarization and compound logic calling Zeyad's base functions
-    return None
+
+    # Step 1: Erosion
+    eroded = erode(image_array, structuring_element)
+
+    # Step 2: Dilation
+    opened = dilate(eroded, structuring_element)
+
+    return opened
 
 def closing(image_array, structuring_element):
     """Performs morphological closing."""
     # TODO (Youssra): Implement slider binarization and compound logic calling Zeyad's base functions
-    return None
+
+    # Step 1: Dilation
+    dilated = dilate(image_array, structuring_element)
+
+    # Step 2: Erosion
+    closed = erode(dilated, structuring_element)
+
+    return closed
 
 def extract_boundary(image_array, structuring_element):
     """
@@ -108,5 +137,12 @@ def extract_boundary(image_array, structuring_element):
         - The boundary is obtained by subtracting the eroded image from the original image.
           (Note: Base logic is implemented via UI wrappers).
     """
-    # TODO (Ahmed): Implement morphological boundary subtraction
-    return None
+    # Owner: Zeyad - Morphology Core
+    eroded = erode(image_array, structuring_element)
+
+    if image_array.dtype == np.uint8 and eroded.dtype == np.uint8:
+        return np.clip(
+            image_array.astype(np.int16) - eroded.astype(np.int16), 0, 255
+        ).astype(np.uint8)
+
+    return (image_array.astype(bool) & ~eroded.astype(bool)).astype(np.uint8) * 255
