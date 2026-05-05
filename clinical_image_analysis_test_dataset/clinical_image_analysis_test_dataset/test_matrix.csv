@@ -1,0 +1,9 @@
+file,format,primary_tests,expected_result
+01_clean_grayscale_detail.png,PNG,"Zoom nearest/bilinear 0.5x and 2x; Average; Gaussian variance 1 and 3; Sobel; Prewitt; Local Histogram Equalization","Edges, gradients, fine checker detail, and smoothing/edge effects should be visually obvious"
+02_salt_pepper_10_percent.png,PNG,"Median filter 3x3 and 5x5","Black/white impulse dots should reduce strongly, especially with 5x5"
+03_low_contrast_uneven_illumination.png,PNG,"Local Histogram Equalization block sizes 8,16,32","Local contrast should improve; smaller blocks may look harsher/blockier"
+04_binary_morphology_shapes.png,PNG,"Threshold; Erosion; Dilation; Square/Cross 3x3 and 5x5","Erosion shrinks/weakens blobs and removes dots; dilation expands blobs and closes small gaps"
+05_clean_grayscale_detail.bmp,BMP,"BMP loading; same basic filters as clean PNG","Should load and behave like the PNG after grayscale conversion"
+06_unsupported_format.txt,TXT,"Unsupported format handling","App should show a controlled error, not crash"
+07_corrupted_image.png,PNG extension but invalid data,"Corrupted file handling","App should reject/raise controlled load error, not crash"
+08_CT_small.dcm,DICOM via pydicom,"DICOM loading and metadata extraction","Should load grayscale CT image and display metadata"

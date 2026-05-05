@@ -1,0 +1,19 @@
+DICOM test file instructions
+
+Recommended method:
+1. Install pydicom if needed:
+   pip install pydicom
+
+2. Run this:
+   import shutil
+   import pydicom.data
+   src = pydicom.data.get_testdata_file("CT_small.dcm")
+   shutil.copy(src, "08_CT_small.dcm")
+
+Expected app behavior:
+- The file should load as a grayscale medical image.
+- Metadata panel should display real DICOM tags such as Patient Name, Modality, Age, and Body Part when present.
+- Modality for CT_small.dcm should be CT.
+
+Note:
+This dataset zip does not include the DICOM file because pydicom test files are library assets. The method above creates a valid .dcm locally.
