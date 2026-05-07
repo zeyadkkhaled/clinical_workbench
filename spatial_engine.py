@@ -98,6 +98,7 @@ def _equalize_block(block):
 
     cdf_min = nonzero_cdf[0]
     total_pixels = block.size
+# interpolationnnnnnnnnnnnnnn
 
     if total_pixels == cdf_min:
         return block.copy()
