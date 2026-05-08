@@ -108,6 +108,26 @@ def _equalize_block(block):
     return mapping[block]
 
 
+# Bahr-Phase1-Fix START: Smooth local histogram equalization
+def _equalization_mapping(block):
+    """Build a 256-value equalization lookup table for one local tile."""
+    histogram = _manual_histogram(block)
+    cdf = np.cumsum(histogram).astype(np.int64)
+
+    nonzero_cdf = cdf[cdf > 0]
+    if nonzero_cdf.size == 0:
+        return np.arange(256, dtype=np.uint8)
+
+    cdf_min = nonzero_cdf[0]
+    total_pixels = block.size
+    if total_pixels == cdf_min:
+        return np.arange(256, dtype=np.uint8)
+
+    equalized_values = (cdf - cdf_min) * 255.0 / (total_pixels - cdf_min)
+    return np.clip(np.round(equalized_values), 0, 255).astype(np.uint8)
+# Bahr-Phase1-Fix END: Smooth local histogram equalization
+
+
 # Author: Ahmed Hassan Bahr
 def zoom_nearest_neighbor(image_array, scale):
     """
@@ -217,10 +237,16 @@ def zoom_linear(image_array, scale):
 # Author: Ahmed Hassan Bahr
 def local_histogram_equalization(image_array, block_size):
     """
-    Applies local histogram equalization block by block from scratch.
+    Applies smooth local histogram equalization from scratch.
 
     RGB/RGBA input is converted to grayscale first using:
         gray = 0.299*R + 0.587*G + 0.114*B
+
+    # Bahr-Phase1-Fix START: Smooth local histogram equalization
+    This version reduces block artifacts by calculating one histogram/CDF
+    mapping per tile, then bilinearly interpolating the four neighboring tile
+    mappings for each pixel instead of pasting independently equalized blocks.
+    # Bahr-Phase1-Fix END: Smooth local histogram equalization
     """
     try:
         if not _is_valid_image_array(image_array) or block_size <= 0:
@@ -235,17 +261,62 @@ def local_histogram_equalization(image_array, block_size):
             return None
 
         height, width = gray.shape
+        if block_size <= 1:
+            return gray.copy()
+
+        if block_size >= max(height, width):
+            return _equalize_block(gray)
+
+        # Bahr-Phase1-Fix START: Smooth local histogram equalization
+        row_starts = list(range(0, height, block_size))
+        col_starts = list(range(0, width, block_size))
+        row_bounds = [(start, min(start + block_size, height)) for start in row_starts]
+        col_bounds = [(start, min(start + block_size, width)) for start in col_starts]
+        row_centers = np.array([(start + end - 1) / 2.0 for start, end in row_bounds], dtype=np.float64)
+        col_centers = np.array([(start + end - 1) / 2.0 for start, end in col_bounds], dtype=np.float64)
+
+        mappings = np.zeros((len(row_bounds), len(col_bounds), 256), dtype=np.uint8)
+        for tile_y, (row_start, row_end) in enumerate(row_bounds):
+            for tile_x, (col_start, col_end) in enumerate(col_bounds):
+                mappings[tile_y, tile_x] = _equalization_mapping(
+                    gray[row_start:row_end, col_start:col_end]
+                )
+
+        col_positions = np.arange(width, dtype=np.float64)
+        x_upper = np.searchsorted(col_centers, col_positions, side="right")
+        x_lower = np.clip(x_upper - 1, 0, len(col_centers) - 1)
+        x_upper = np.clip(x_upper, 0, len(col_centers) - 1)
+        x_denom = col_centers[x_upper] - col_centers[x_lower]
+        x_weight = np.divide(
+            col_positions - col_centers[x_lower],
+            x_denom,
+            out=np.zeros(width, dtype=np.float64),
+            where=x_denom != 0,
+        )
+        x_weight = np.clip(x_weight, 0.0, 1.0)
+
         enhanced = np.zeros((height, width), dtype=np.uint8)
+        for row in range(height):
+            y_pos = float(row)
+            y_upper = int(np.searchsorted(row_centers, y_pos, side="right"))
+            y_lower = max(0, min(y_upper - 1, len(row_centers) - 1))
+            y_upper = max(0, min(y_upper, len(row_centers) - 1))
+            y_denom = row_centers[y_upper] - row_centers[y_lower]
+            y_weight = 0.0 if y_denom == 0 else (y_pos - row_centers[y_lower]) / y_denom
+            y_weight = min(1.0, max(0.0, y_weight))
 
-        for row_start in range(0, height, block_size):
-            row_end = min(row_start + block_size, height)
+            intensities = gray[row]
+            top_left = mappings[y_lower, x_lower, intensities].astype(np.float64)
+            top_right = mappings[y_lower, x_upper, intensities].astype(np.float64)
+            bottom_left = mappings[y_upper, x_lower, intensities].astype(np.float64)
+            bottom_right = mappings[y_upper, x_upper, intensities].astype(np.float64)
 
-            for col_start in range(0, width, block_size):
-                col_end = min(col_start + block_size, width)
+            top = top_left * (1.0 - x_weight) + top_right * x_weight
+            bottom = bottom_left * (1.0 - x_weight) + bottom_right * x_weight
+            blended = top * (1.0 - y_weight) + bottom * y_weight
+            enhanced[row] = np.clip(np.round(blended), 0, 255).astype(np.uint8)
 
-                block = gray[row_start:row_end, col_start:col_end]
-                enhanced[row_start:row_end, col_start:col_end] = _equalize_block(block)
-
+        # Bahr-Phase1-Fix END: Smooth local histogram equalization
         return enhanced
     except Exception:
         return None

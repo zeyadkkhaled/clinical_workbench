@@ -11,6 +11,7 @@ import ai_segmentation_engine
 import image_io
 import spatial_engine
 import morphology_engine
+import frequency_engine
 
 from config import (
     UI_PADDING, CORNER_RADIUS, SIDEBAR_WIDTH,
@@ -52,7 +53,11 @@ class UIManager:
         self.original_image_array = None
         self.current_image_array  = None
         self.image_history: list  = []    # always contains copies; never None
+        self.redo_history: list   = []
         self.metadata_dict        = {}
+        # Bahr-Phase2: ROI selection state variables
+        self.selected_roi         = None
+        self.last_roi_histogram   = None
 
         # Owner: Bahr - AI Segmentation Bonus
         # AI state is intentionally separate from current_image_array/image_history.
@@ -68,6 +73,12 @@ class UIManager:
         self._photo_image          = None
         self._canvas_image_id      = None
         self._canvas_placeholder_id = None
+        # Bahr-Phase2: ROI drawing state and display mapping state
+        self._roi_rect_id           = None
+        self._roi_drag_start        = None
+        self._display_image_origin  = (0, 0)
+        self._display_image_size    = (0, 0)
+        self._display_to_array_scale = (1.0, 1.0)
         self._ai_preview_photos     = {}
 
         self.setup_ui()
@@ -89,6 +100,7 @@ class UIManager:
         self._build_right_panel()
         self._build_status_bar()
         self.build_sidebar_controls()
+        self._bind_keyboard_shortcuts()
 
     # Author: Zeyad Khaled
     def _build_sidebar(self):
@@ -199,8 +211,11 @@ class UIManager:
         self.canvas.bind("<Configure>",         self._on_canvas_resize)
         self.canvas.bind("<MouseWheel>",         self._on_mousewheel)
         self.canvas.bind("<Shift-MouseWheel>",   self._on_shift_mousewheel)
-        self.canvas.bind("<ButtonPress-1>",      self._on_pan_start)
-        self.canvas.bind("<B1-Motion>",          self._on_pan_move)
+        self.canvas.bind("<ButtonPress-1>",      self._on_roi_start)
+        self.canvas.bind("<B1-Motion>",          self._on_roi_drag)
+        self.canvas.bind("<ButtonRelease-1>",    self._on_roi_end)
+        self.canvas.bind("<ButtonPress-2>",      self._on_pan_start)
+        self.canvas.bind("<B2-Motion>",          self._on_pan_move)
         self.canvas.bind("<Enter>",              lambda e: self.canvas.focus_set())
         self._build_ai_tab()
 
@@ -362,6 +377,74 @@ class UIManager:
         )
         self.stats_label.pack(fill="x", padx=10, pady=8)
 
+        roi_card = ctk.CTkFrame(self.right_panel, fg_color=CLR_BG_CARD, corner_radius=8)
+        roi_card.pack(fill="x", padx=8, pady=(6, 4))
+        ctk.CTkLabel(
+            roi_card,
+            text="ROI Statistics",
+            font=FONT_LABEL_BOLD,
+            text_color=CLR_TEXT_HDG,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 0))
+        self.roi_stats_label = ctk.CTkLabel(
+            roi_card,
+            text="Draw a rectangle on the image.",
+            font=FONT_MONO,
+            text_color=CLR_TEXT_SEC,
+            anchor="w",
+            justify="left",
+        )
+        self.roi_stats_label.pack(fill="x", padx=10, pady=8)
+        # Bahr-Phase2 START: ROI histogram display
+        self.roi_hist_canvas = tk.Canvas(
+            roi_card,
+            height=96,
+            bg=CLR_BG_MAIN,
+            highlightthickness=1,
+            highlightbackground=CLR_BORDER,
+            bd=0,
+        )
+        self.roi_hist_canvas.pack(fill="x", padx=10, pady=(0, 10))
+        self._draw_roi_histogram(None)
+        # Bahr-Phase2 END: ROI histogram display
+
+        pipeline_card = ctk.CTkFrame(self.right_panel, fg_color=CLR_BG_CARD, corner_radius=8)
+        pipeline_card.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
+        ctk.CTkLabel(
+            pipeline_card,
+            text="Pipeline",
+            font=FONT_LABEL_BOLD,
+            text_color=CLR_TEXT_HDG,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 2))
+        pipe_row = ctk.CTkFrame(pipeline_card, fg_color="transparent")
+        pipe_row.pack(fill="x", padx=8, pady=(0, 8))
+        self.btn_undo = ctk.CTkButton(
+            pipe_row, text="Undo", command=self.on_undo,
+            font=FONT_BUTTON, fg_color=CLR_WARNING, hover_color=CLR_WARNING_HVR,
+            corner_radius=6, height=32, width=70,
+        )
+        self.btn_undo.pack(side="left", fill="x", expand=True, padx=(0, 3))
+        self.btn_redo = ctk.CTkButton(
+            pipe_row, text="Redo", command=self.on_redo,
+            font=FONT_BUTTON, fg_color=CLR_ACCENT, hover_color=CLR_ACCENT_HOVER,
+            corner_radius=6, height=32, width=70,
+        )
+        self.btn_redo.pack(side="left", fill="x", expand=True, padx=3)
+        self.btn_reset = ctk.CTkButton(
+            pipe_row, text="Reset", command=self.on_reset,
+            font=FONT_BUTTON, fg_color=CLR_DANGER, hover_color=CLR_DANGER_HVR,
+            corner_radius=6, height=32, width=70,
+        )
+        self.btn_reset.pack(side="left", fill="x", expand=True, padx=(3, 0))
+        self.history_label = ctk.CTkLabel(
+            pipeline_card,
+            text="Undo: 0 | Redo: 0",
+            font=FONT_LABEL,
+            text_color=CLR_TEXT_SEC,
+        )
+        self.history_label.pack(fill="x", padx=10, pady=(0, 8))
+
         ctk.CTkLabel(
             self.right_panel, text="  Metadata",
             font=FONT_LABEL_BOLD, text_color=CLR_TEXT_SEC, anchor="w",
@@ -378,14 +461,6 @@ class UIManager:
         )
         self.metadata_textbox.pack(padx=8, pady=(0, 4), fill="both", expand=True)
         self.metadata_textbox.configure(state="disabled")
-
-        self.history_label = ctk.CTkLabel(
-            self.right_panel,
-            text="Undo steps: 0",
-            font=FONT_LABEL,
-            text_color=CLR_TEXT_SEC,
-        )
-        self.history_label.pack(pady=(0, 8))
 
     def _build_status_bar(self):
         self.status_bar = ctk.CTkFrame(
@@ -432,6 +507,100 @@ class UIManager:
     def _on_shift_mousewheel(self, event):
         """Horizontal scroll via Shift + mouse wheel."""
         self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    # Bahr-Phase2 START: ROI coordinate mapping fix
+    def _canvas_to_image_xy(self, event):
+        """
+        Map a mouse event on the scrollable canvas to real image-array pixels.
+
+        The required pipeline currently renders the image at original size with
+        its top-left corner at canvas coordinate (0, 0). This helper still tracks
+        display origin, display size, and display-to-array scale so ROI selection
+        remains correct if a later UI change centers or scales the canvas image.
+        """
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        origin_x, origin_y = self._display_image_origin
+        scale_x, scale_y = self._display_to_array_scale
+
+        image_x = int(round((canvas_x - origin_x) * scale_x))
+        image_y = int(round((canvas_y - origin_y) * scale_y))
+
+        if self.current_image_array is None:
+            return image_x, image_y
+
+        height, width = self.current_image_array.shape[:2]
+        image_x = max(0, min(image_x, width))
+        image_y = max(0, min(image_y, height))
+        return image_x, image_y
+
+    def _image_to_canvas_xy(self, x, y):
+        """Map stored image-array ROI coordinates back to displayed canvas coordinates."""
+        origin_x, origin_y = self._display_image_origin
+        scale_x, scale_y = self._display_to_array_scale
+        display_x = origin_x + (x / scale_x if scale_x else x)
+        display_y = origin_y + (y / scale_y if scale_y else y)
+        return display_x, display_y
+    # Bahr-Phase2 END: ROI coordinate mapping fix
+
+    # Bahr-Phase2
+    def _on_roi_start(self, event):
+        """Begin drawing a rectangular ROI on the image canvas."""
+        if self.current_image_array is None:
+            return
+        x, y = self._canvas_to_image_xy(event)
+        self._roi_drag_start = (x, y)
+        self.selected_roi = None
+        self.last_roi_histogram = None
+        self._draw_roi_histogram(None)
+        if self._roi_rect_id is not None:
+            self.canvas.delete(self._roi_rect_id)
+        cx, cy = self._image_to_canvas_xy(x, y)
+        self._roi_rect_id = self.canvas.create_rectangle(
+            cx, cy, cx, cy, outline=CLR_CYAN, width=2, dash=(4, 2),
+        )
+
+    # Bahr-Phase2
+    def _on_roi_drag(self, event):
+        """Update the visible ROI rectangle while dragging."""
+        if self.current_image_array is None or self._roi_drag_start is None:
+            return
+        x1, y1 = self._roi_drag_start
+        x2, y2 = self._canvas_to_image_xy(event)
+        cx1, cy1 = self._image_to_canvas_xy(x1, y1)
+        cx2, cy2 = self._image_to_canvas_xy(x2, y2)
+        if self._roi_rect_id is None:
+            self._roi_rect_id = self.canvas.create_rectangle(
+                cx1, cy1, cx2, cy2, outline=CLR_CYAN, width=2, dash=(4, 2),
+            )
+        else:
+            self.canvas.coords(self._roi_rect_id, cx1, cy1, cx2, cy2)
+
+    # Bahr-Phase2
+    def _on_roi_end(self, event):
+        """Finish ROI selection and store clamped image coordinates."""
+        if self.current_image_array is None or self._roi_drag_start is None:
+            return
+        x1, y1 = self._roi_drag_start
+        x2, y2 = self._canvas_to_image_xy(event)
+        self._roi_drag_start = None
+
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        if right <= left or bottom <= top:
+            self.clear_roi(show_message=False)
+            self._set_status("Please select a valid ROI.", "warning")
+            return
+
+        self.selected_roi = (left, top, right, bottom)
+        if self._roi_rect_id is not None:
+            cx1, cy1 = self._image_to_canvas_xy(left, top)
+            cx2, cy2 = self._image_to_canvas_xy(right, bottom)
+            self.canvas.coords(self._roi_rect_id, cx1, cy1, cx2, cy2)
+        self.roi_stats_label.configure(
+            text=f"Selected ROI:\nx1={left}, y1={top}\nx2={right}, y2={bottom}"
+        )
+        self._set_status("ROI selected.", "info")
 
     def _on_pan_start(self, event):
         """Begin click-drag panning."""
@@ -567,6 +736,26 @@ class UIManager:
         self.block_size_input = self._styled_entry(c, placeholder="e.g. 32")
         self.btn_hist_eq = self._op_btn(c, "Apply Local Equalization", self.on_local_hist_eq)
 
+        c = self._make_card("ROI / Noise Analysis")
+        self._muted_label(c, "Noise Type")
+        self.noise_type_var = ctk.StringVar(value="Gaussian")
+        self.noise_dropdown = self._styled_optionmenu(c, ["Gaussian", "Uniform"], self.noise_type_var)
+        self._muted_label(c, "Gaussian Mean")
+        self.noise_gaussian_mean_input = self._styled_entry(c, default="0")
+        self._muted_label(c, "Gaussian Std")
+        self.noise_gaussian_std_input = self._styled_entry(c, default="10")
+        self._muted_label(c, "Uniform Low")
+        self.noise_uniform_low_input = self._styled_entry(c, default="-10")
+        self._muted_label(c, "Uniform High")
+        self.noise_uniform_high_input = self._styled_entry(c, default="10")
+        self.btn_apply_noise = self._op_btn(
+            c, "Apply Noise", self.on_apply_noise, fg=CLR_CYAN, hover=CLR_CYAN_HOVER,
+        )
+        self.btn_roi_stats = self._op_btn(c, "Calculate ROI Statistics", self.on_calculate_roi_statistics)
+        self.btn_clear_roi = self._op_btn(
+            c, "Clear ROI", self.clear_roi, fg=CLR_WARNING, hover=CLR_WARNING_HVR,
+        )
+
         # ── Morphology ────────────────────────────────────────────────────────
         c = self._make_card("Morphology")
 
@@ -606,8 +795,6 @@ class UIManager:
 
         # ── Pipeline ──────────────────────────────────────────────────────────
         c = self._make_card("Pipeline Controls")
-        self.btn_undo  = self._op_btn(c, "⟵  Undo Last Step",   self.on_undo,  fg=CLR_WARNING, hover=CLR_WARNING_HVR)
-        self.btn_reset = self._op_btn(c, "↺  Reset to Original", self.on_reset, fg=CLR_DANGER,  hover=CLR_DANGER_HVR)
         self.btn_split = self._op_btn(c, "Toggle Split View", self.toggle_split_view, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -634,10 +821,11 @@ class UIManager:
             # undoable steps = history length minus the initial loaded entry
             undoable = max(0, len(self.image_history) - 1)
             self.dim_label.configure(text=f"{w} × {h}  {mode}  |  Undo: {undoable}  ")
-            self.history_label.configure(text=f"Undo steps: {undoable}")
+            redoable = len(self.redo_history)
+            self.history_label.configure(text=f"Undo: {undoable} | Redo: {redoable}")
         else:
             self.dim_label.configure(text="")
-            self.history_label.configure(text="Undo steps: 0")
+            self.history_label.configure(text="Undo: 0 | Redo: 0")
 
     def _update_stats(self):
         if self.current_image_array is None:
@@ -670,6 +858,13 @@ class UIManager:
             return None
         return val
 
+    def _parse_float(self, widget, name):
+        try:
+            return float(widget.get().strip())
+        except ValueError:
+            self._set_status(f"{name}: enter a valid number.", "error")
+            return None
+
     def _parse_odd_int(self, widget, name):
         try:
             val = int(widget.get().strip())
@@ -697,7 +892,7 @@ class UIManager:
 
     def _require_image(self):
         if self.current_image_array is None:
-            self._set_status("No image loaded — use  Load Image  first.", "warning")
+            self._set_status("Please load an image first.", "warning")
             return False
         return True
 
@@ -712,6 +907,11 @@ class UIManager:
     def show_info(self, message):
         self._set_status(message[:90], "success")
         messagebox.showinfo("Success", message)
+
+    def _bind_keyboard_shortcuts(self):
+        self.master.bind_all("<Control-z>", lambda event: self.on_undo())
+        self.master.bind_all("<Control-y>", lambda event: self.on_redo())
+        self.master.bind_all("<Control-r>", lambda event: self.on_reset())
 
     # Owner: Zeyad - GUI / Pipeline Architecture
     def _set_ai_status(self, message, level="info"):
@@ -820,7 +1020,16 @@ class UIManager:
 
         # Expand scroll region to the full image size so scrollbars reflect reality
         img_w, img_h = pil_img.size
+        arr_h, arr_w = new_numpy_array.shape[:2]
+        self._display_image_origin = (0, 0)
+        self._display_image_size = (img_w, img_h)
+        self._display_to_array_scale = (
+            arr_w / img_w if img_w else 1.0,
+            arr_h / img_h if img_h else 1.0,
+        )
         self.canvas.configure(scrollregion=(0, 0, img_w, img_h))
+        if self._roi_rect_id is not None:
+            self.canvas.tag_raise(self._roi_rect_id)
 
         # Reset viewport to top-left on every new result
         self.canvas.xview_moveto(0)
@@ -855,6 +1064,7 @@ class UIManager:
         safe_copy = result.copy()
         self.current_image_array = safe_copy
         self.image_history.append(safe_copy.copy())
+        self.redo_history.clear()
 
         h, w = safe_copy.shape[:2]
         self.metadata_dict["Width"]  = str(w)
@@ -868,7 +1078,7 @@ class UIManager:
         Returns True on success, False on failure (state is unchanged on failure).
         """
         if self.current_image_array is None:
-            self._set_status("No image loaded.", "warning")
+            self._set_status("Please load an image first.", "warning")
             return False
         try:
             new_image = action_func(self.current_image_array, *args, **kwargs)
@@ -934,6 +1144,147 @@ class UIManager:
     # ─────────────────────────────────────────────────────────────────────────
     # Callbacks  (names unchanged from original)
     # ─────────────────────────────────────────────────────────────────────────
+
+    # Bahr-Phase2 START: ROI histogram display
+    def _draw_roi_histogram(self, histogram):
+        """Draw a compact 64-bar view of the 256-bin ROI histogram."""
+        if not hasattr(self, "roi_hist_canvas"):
+            return
+
+        canvas = self.roi_hist_canvas
+        canvas.delete("all")
+        width = max(1, canvas.winfo_width() or 220)
+        height = max(1, canvas.winfo_height() or 96)
+        pad_x = 8
+        pad_y = 8
+
+        canvas.create_line(
+            pad_x, height - pad_y, width - pad_x, height - pad_y,
+            fill=CLR_BORDER,
+        )
+        canvas.create_text(
+            pad_x,
+            pad_y,
+            text="ROI Histogram",
+            fill=CLR_TEXT_SEC,
+            font=FONT_MONO,
+            anchor="nw",
+        )
+
+        if histogram is None:
+            canvas.create_text(
+                width // 2,
+                height // 2 + 8,
+                text="No ROI data",
+                fill=CLR_TEXT_SEC,
+                font=FONT_MONO,
+            )
+            return
+
+        hist = np.asarray(histogram, dtype=np.float64)
+        if hist.size != 256 or np.max(hist) <= 0:
+            return
+
+        grouped = hist.reshape(64, 4).sum(axis=1)
+        max_count = np.max(grouped)
+        if max_count <= 0:
+            return
+
+        chart_top = 24
+        chart_bottom = height - pad_y - 1
+        chart_h = max(1, chart_bottom - chart_top)
+        chart_w = max(1, width - 2 * pad_x)
+        bar_w = chart_w / 64.0
+
+        for idx, count in enumerate(grouped):
+            x1 = pad_x + idx * bar_w
+            x2 = pad_x + (idx + 1) * bar_w - 1
+            bar_h = (count / max_count) * chart_h
+            y1 = chart_bottom - bar_h
+            canvas.create_rectangle(
+                x1, y1, max(x1 + 1, x2), chart_bottom,
+                fill=CLR_CYAN,
+                outline="",
+            )
+    # Bahr-Phase2 END: ROI histogram display
+
+    # Bahr-Phase2
+    def clear_roi(self, show_message=True):
+        """Clear the selected ROI rectangle and displayed ROI statistics."""
+        self.selected_roi = None
+        self.last_roi_histogram = None
+        self._roi_drag_start = None
+        if self._roi_rect_id is not None:
+            self.canvas.delete(self._roi_rect_id)
+            self._roi_rect_id = None
+        self.roi_stats_label.configure(text="Draw a rectangle on the image.")
+        self._draw_roi_histogram(None)
+        if show_message:
+            self._set_status("ROI cleared.", "info")
+
+    # Bahr-Phase2
+    def on_apply_noise(self):
+        if not self._require_image():
+            return
+
+        noise_type = self.noise_type_var.get()
+        if noise_type == "Gaussian":
+            mean = self._parse_float(self.noise_gaussian_mean_input, "Gaussian mean")
+            std = self._parse_float(self.noise_gaussian_std_input, "Gaussian std")
+            if mean is None or std is None:
+                return
+            parameters = {"mean": mean, "std": std}
+        else:
+            low = self._parse_float(self.noise_uniform_low_input, "Uniform low")
+            high = self._parse_float(self.noise_uniform_high_input, "Uniform high")
+            if low is None or high is None:
+                return
+            parameters = {"low": low, "high": high}
+
+        self._set_status(f"Applying {noise_type} noise ...", "busy")
+        ok = self.apply_action(frequency_engine.inject_noise, noise_type, parameters)
+        if ok:
+            self._set_status(f"{noise_type} noise applied.", "success")
+
+    # Bahr-Phase2
+    def on_calculate_roi_statistics(self):
+        if not self._require_image():
+            return
+        if self.selected_roi is None:
+            self._set_status("Please select a valid ROI.", "warning")
+            return
+
+        try:
+            stats = frequency_engine.calculate_roi_statistics(
+                self.current_image_array,
+                self.selected_roi,
+            )
+        except ValueError as e:
+            self._set_status(str(e), "warning")
+            return
+        except Exception as e:
+            self._set_status(f"ROI statistics error: {str(e)[:60]}", "error")
+            return
+
+        self.last_roi_histogram = stats["histogram"]
+        self._draw_roi_histogram(self.last_roi_histogram)
+        self.roi_stats_label.configure(
+            text=(
+                f"Mean:   {stats['mean']:.2f}\n"
+                f"Var:    {stats['variance']:.2f}\n"
+                f"Std:    {stats['std']:.2f}\n"
+                f"Min:    {stats['min']}\n"
+                f"Max:    {stats['max']}\n"
+                f"Pixels: {stats['pixel_count']}"
+            )
+        )
+        print(
+            "ROI Statistics | "
+            f"mean={stats['mean']:.2f}, variance={stats['variance']:.2f}, "
+            f"std={stats['std']:.2f}, min={stats['min']}, max={stats['max']}, "
+            f"pixels={stats['pixel_count']}"
+        )
+        self._set_status("ROI statistics calculated and histogram displayed.", "success")
 
     # Owner: Bahr - AI Segmentation Bonus
     def on_ai_upload_image(self):
@@ -1185,7 +1536,9 @@ class UIManager:
             self.original_image_array = image_array.copy()
             self.current_image_array  = image_array.copy()
             self.image_history        = [image_array.copy()]   # ← spec: [loaded_copy]
+            self.redo_history         = []
             self.metadata_dict        = metadata
+            self.clear_roi(show_message=False)
 
             self.refresh_canvas(self.current_image_array)
             self.update_metadata_panel(self.metadata_dict)
@@ -1386,7 +1739,7 @@ class UIManager:
             self._set_status("No previous step to undo — already at original image.", "warning")
             return
 
-        self.image_history.pop()                               # remove last result
+        self.redo_history.append(self.image_history.pop().copy())  # move last result to redo stack
         self.current_image_array = self.image_history[-1].copy()  # restore previous
 
         h, w = self.current_image_array.shape[:2]
@@ -1400,6 +1753,23 @@ class UIManager:
             f"Undo complete. {undoable} more step(s) can still be undone.", "info",
         )
 
+    def on_redo(self):
+        """Redo the most recently undone pipeline step."""
+        if not self.redo_history:
+            self._set_status("No step to redo.", "warning")
+            return
+
+        redo_image = self.redo_history.pop().copy()
+        self.image_history.append(redo_image.copy())
+        self.current_image_array = self.image_history[-1].copy()
+
+        h, w = self.current_image_array.shape[:2]
+        self.metadata_dict["Width"]  = str(w)
+        self.metadata_dict["Height"] = str(h)
+        self.update_metadata_panel(self.metadata_dict)
+        self.refresh_canvas(self.current_image_array)
+        self._set_status("Redo complete.", "info")
+
     # Author: Zeyad Khaled
     def on_reset(self):
         """Restore original image and clear the entire pipeline history."""
@@ -1409,6 +1779,8 @@ class UIManager:
 
         self.current_image_array = self.original_image_array.copy()
         self.image_history       = [self.original_image_array.copy()]  # ← spec: fresh history
+        self.redo_history        = []
+        self.clear_roi(show_message=False)
 
         h, w = self.current_image_array.shape[:2]
         self.metadata_dict["Width"]  = str(w)
