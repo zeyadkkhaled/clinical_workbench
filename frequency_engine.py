@@ -139,7 +139,97 @@ def calculate_roi_statistics(image_array, roi):
         "histogram": histogram,
     }
 
+
+# Youssra-Phase2
+def _to_grayscale_float(image_array):
+    """Convert grayscale/RGB/RGBA image data to grayscale float64 for Fourier matching."""
+    if not _is_valid_image_array(image_array):
+        raise ValueError("Invalid image array.")
+
+    array = _to_uint8(image_array)
+    if array.ndim == 2:
+        return array.astype(np.float64)
+    if array.shape[2] == 1:
+        return array[:, :, 0].astype(np.float64)
+
+    red = array[:, :, 0].astype(np.float64)
+    green = array[:, :, 1].astype(np.float64)
+    blue = array[:, :, 2].astype(np.float64)
+    return 0.299 * red + 0.587 * green + 0.114 * blue
+
+
+# Youssra-Phase2
+def _window_sum(image, window_h, window_w):
+    """Compute all valid HxW window sums with a summed-area table."""
+    padded = np.pad(image, ((1, 0), (1, 0)), mode="constant")
+    integral = np.cumsum(np.cumsum(padded, axis=0), axis=1)
+    return (
+        integral[window_h:, window_w:]
+        - integral[:-window_h, window_w:]
+        - integral[window_h:, :-window_w]
+        + integral[:-window_h, :-window_w]
+    )
+
+
+# Youssra-Phase2 START: Fourier template matching
 def template_matching_fourier(image_array, template_array):
-    """Performs template matching in the Fourier Domain."""
-    # TODO (Youssra): Implement cross-correlation in the Fourier Domain
-    return None
+    """
+    Locate a cropped template inside an image using Fourier-domain cross-correlation.
+
+    Returns a dictionary with top-left/bottom-right coordinates, peak score, and
+    the valid response map. Coordinates are clamped inside the source image.
+    """
+    image = _to_grayscale_float(image_array)
+    template = _to_grayscale_float(template_array)
+
+    image_h, image_w = image.shape
+    template_h, template_w = template.shape
+
+    if template_h <= 0 or template_w <= 0:
+        raise ValueError("Template is empty.")
+    if template_h > image_h or template_w > image_w:
+        raise ValueError("Template must not be larger than the image.")
+
+    template_zero_mean = template - np.mean(template)
+    if not np.any(template_zero_mean):
+        raise ValueError("Template has no intensity variation.")
+
+    padded_template = np.zeros_like(image, dtype=np.float64)
+    padded_template[:template_h, :template_w] = template_zero_mean
+
+    f_image = np.fft.fft2(image)
+    f_template = np.fft.fft2(padded_template)
+    numerator = np.real(np.fft.ifft2(f_image * np.conj(f_template)))
+
+    valid_h = image_h - template_h + 1
+    valid_w = image_w - template_w + 1
+    valid_numerator = numerator[:valid_h, :valid_w]
+
+    window_area = float(template_h * template_w)
+    window_sum = _window_sum(image, template_h, template_w)
+    window_sumsq = _window_sum(image * image, template_h, template_w)
+    window_variance_sum = np.maximum(window_sumsq - (window_sum * window_sum / window_area), 0.0)
+    template_energy = np.sum(template_zero_mean * template_zero_mean)
+    denominator = np.sqrt(window_variance_sum * template_energy)
+
+    valid_response = np.zeros_like(valid_numerator, dtype=np.float64)
+    np.divide(
+        valid_numerator,
+        denominator,
+        out=valid_response,
+        where=denominator > 1e-12,
+    )
+    peak_y, peak_x = np.unravel_index(np.argmax(valid_response), valid_response.shape)
+
+    x1 = int(np.clip(peak_x, 0, image_w - 1))
+    y1 = int(np.clip(peak_y, 0, image_h - 1))
+    x2 = int(np.clip(x1 + template_w, 0, image_w))
+    y2 = int(np.clip(y1 + template_h, 0, image_h))
+
+    return {
+        "top_left": (x1, y1),
+        "bottom_right": (x2, y2),
+        "score": float(valid_response[peak_y, peak_x]),
+        "response": valid_response,
+    }
+# Youssra-Phase2 END: Fourier template matching

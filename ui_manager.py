@@ -58,6 +58,11 @@ class UIManager:
         # Bahr-Phase2: ROI selection state variables
         self.selected_roi         = None
         self.last_roi_histogram   = None
+        # Youssra-Phase2
+        self.selection_mode        = "roi"
+        self.selected_template_roi = None
+        self.selected_template     = None
+        self.last_template_match   = None
 
         # Owner: Bahr - AI Segmentation Bonus
         # AI state is intentionally separate from current_image_array/image_history.
@@ -76,6 +81,10 @@ class UIManager:
         # Bahr-Phase2: ROI drawing state and display mapping state
         self._roi_rect_id           = None
         self._roi_drag_start        = None
+        # Youssra-Phase2
+        self._template_rect_id      = None
+        self._template_drag_start   = None
+        self._match_box_id          = None
         self._display_image_origin  = (0, 0)
         self._display_image_size    = (0, 0)
         self._display_to_array_scale = (1.0, 1.0)
@@ -408,6 +417,27 @@ class UIManager:
         self._draw_roi_histogram(None)
         # Bahr-Phase2 END: ROI histogram display
 
+        # Youssra-Phase2 START: template matching UI
+        template_card = ctk.CTkFrame(self.right_panel, fg_color=CLR_BG_CARD, corner_radius=8)
+        template_card.pack(fill="x", padx=8, pady=(6, 4))
+        ctk.CTkLabel(
+            template_card,
+            text="Template Match",
+            font=FONT_LABEL_BOLD,
+            text_color=CLR_TEXT_HDG,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 0))
+        self.template_match_label = ctk.CTkLabel(
+            template_card,
+            text="Mode: ROI statistics",
+            font=FONT_MONO,
+            text_color=CLR_TEXT_SEC,
+            anchor="w",
+            justify="left",
+        )
+        self.template_match_label.pack(fill="x", padx=10, pady=8)
+        # Youssra-Phase2 END: template matching UI
+
         pipeline_card = ctk.CTkFrame(self.right_panel, fg_color=CLR_BG_CARD, corner_radius=8)
         pipeline_card.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
         ctk.CTkLabel(
@@ -548,6 +578,9 @@ class UIManager:
         """Begin drawing a rectangular ROI on the image canvas."""
         if self.current_image_array is None:
             return
+        if self.selection_mode == "template":
+            self._on_template_start(event)
+            return
         x, y = self._canvas_to_image_xy(event)
         self._roi_drag_start = (x, y)
         self.selected_roi = None
@@ -564,6 +597,11 @@ class UIManager:
     def _on_roi_drag(self, event):
         """Update the visible ROI rectangle while dragging."""
         if self.current_image_array is None or self._roi_drag_start is None:
+            if self.selection_mode == "template" and self._template_drag_start is not None:
+                self._on_template_drag(event)
+            return
+        if self.selection_mode == "template":
+            self._on_template_drag(event)
             return
         x1, y1 = self._roi_drag_start
         x2, y2 = self._canvas_to_image_xy(event)
@@ -580,6 +618,11 @@ class UIManager:
     def _on_roi_end(self, event):
         """Finish ROI selection and store clamped image coordinates."""
         if self.current_image_array is None or self._roi_drag_start is None:
+            if self.selection_mode == "template" and self._template_drag_start is not None:
+                self._on_template_end(event)
+            return
+        if self.selection_mode == "template":
+            self._on_template_end(event)
             return
         x1, y1 = self._roi_drag_start
         x2, y2 = self._canvas_to_image_xy(event)
@@ -601,6 +644,61 @@ class UIManager:
             text=f"Selected ROI:\nx1={left}, y1={top}\nx2={right}, y2={bottom}"
         )
         self._set_status("ROI selected.", "info")
+
+    # Youssra-Phase2 START: template matching UI
+    def _on_template_start(self, event):
+        """Begin drawing a template selection rectangle without touching Bahr ROI state."""
+        x, y = self._canvas_to_image_xy(event)
+        self._template_drag_start = (x, y)
+        self.selected_template_roi = None
+        if self._template_rect_id is not None:
+            self.canvas.delete(self._template_rect_id)
+        cx, cy = self._image_to_canvas_xy(x, y)
+        self._template_rect_id = self.canvas.create_rectangle(
+            cx, cy, cx, cy, outline=CLR_SUCCESS, width=2,
+        )
+        self.template_match_label.configure(text="Template mode:\ndrag a template box")
+
+    def _on_template_drag(self, event):
+        """Update the template selection rectangle."""
+        if self._template_drag_start is None:
+            return
+        x1, y1 = self._template_drag_start
+        x2, y2 = self._canvas_to_image_xy(event)
+        cx1, cy1 = self._image_to_canvas_xy(x1, y1)
+        cx2, cy2 = self._image_to_canvas_xy(x2, y2)
+        if self._template_rect_id is None:
+            self._template_rect_id = self.canvas.create_rectangle(
+                cx1, cy1, cx2, cy2, outline=CLR_SUCCESS, width=2,
+            )
+        else:
+            self.canvas.coords(self._template_rect_id, cx1, cy1, cx2, cy2)
+
+    def _on_template_end(self, event):
+        """Store the selected template rectangle in image coordinates."""
+        if self._template_drag_start is None:
+            return
+        x1, y1 = self._template_drag_start
+        x2, y2 = self._canvas_to_image_xy(event)
+        self._template_drag_start = None
+
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        if right <= left or bottom <= top:
+            self.selected_template_roi = None
+            self._set_status("Please select a valid template region.", "warning")
+            return
+
+        self.selected_template_roi = (left, top, right, bottom)
+        if self._template_rect_id is not None:
+            cx1, cy1 = self._image_to_canvas_xy(left, top)
+            cx2, cy2 = self._image_to_canvas_xy(right, bottom)
+            self.canvas.coords(self._template_rect_id, cx1, cy1, cx2, cy2)
+        self.template_match_label.configure(
+            text=f"Template selected:\nx1={left}, y1={top}\nx2={right}, y2={bottom}"
+        )
+        self._set_status("Template region selected. Click Save Selected Template.", "info")
+    # Youssra-Phase2 END: template matching UI
 
     def _on_pan_start(self, event):
         """Begin click-drag panning."""
@@ -703,6 +801,18 @@ class UIManager:
         )
         self.btn_zoom = self._op_btn(c, "Apply Zoom", self.on_zoom)
 
+        # Youssra-Phase2 START: geometric transform UI
+        c = self._make_card("Geometric Transforms")
+        self._muted_label(c, "Rotation Angle  (degrees)")
+        self.rotation_angle_input = self._styled_entry(c, default="30")
+        self.btn_rotate = self._op_btn(c, "Apply Rotation", self.on_apply_rotation)
+        self._muted_label(c, "Shear X")
+        self.shear_x_input = self._styled_entry(c, default="0.3")
+        self._muted_label(c, "Shear Y")
+        self.shear_y_input = self._styled_entry(c, default="0.0")
+        self.btn_shear = self._op_btn(c, "Apply Shear", self.on_apply_shear)
+        # Youssra-Phase2 END: geometric transform UI
+
         # ── Spatial Filters ───────────────────────────────────────────────────
         c = self._make_card("Spatial Filters")
         self._muted_label(c, "Kernel Size  (odd integer)")
@@ -755,6 +865,20 @@ class UIManager:
         self.btn_clear_roi = self._op_btn(
             c, "Clear ROI", self.clear_roi, fg=CLR_WARNING, hover=CLR_WARNING_HVR,
         )
+
+        # Youssra-Phase2 START: template matching UI
+        c = self._make_card("Template Matching")
+        self.btn_template_mode = self._op_btn(
+            c, "Select Template Mode", self.enter_template_selection_mode,
+            fg=CLR_CYAN, hover=CLR_CYAN_HOVER,
+        )
+        self.btn_save_template = self._op_btn(c, "Save Selected Template", self.save_selected_template)
+        self.btn_run_template = self._op_btn(c, "Run Template Matching", self.run_template_matching)
+        self.btn_clear_template = self._op_btn(
+            c, "Clear Template / Match Box", self.clear_template_match,
+            fg=CLR_WARNING, hover=CLR_WARNING_HVR,
+        )
+        # Youssra-Phase2 END: template matching UI
 
         # ── Morphology ────────────────────────────────────────────────────────
         c = self._make_card("Morphology")
@@ -1030,6 +1154,10 @@ class UIManager:
         self.canvas.configure(scrollregion=(0, 0, img_w, img_h))
         if self._roi_rect_id is not None:
             self.canvas.tag_raise(self._roi_rect_id)
+        if self._template_rect_id is not None:
+            self.canvas.tag_raise(self._template_rect_id)
+        if self._match_box_id is not None:
+            self.canvas.tag_raise(self._match_box_id)
 
         # Reset viewport to top-left on every new result
         self.canvas.xview_moveto(0)
@@ -1071,6 +1199,8 @@ class UIManager:
         self.metadata_dict["Height"] = str(h)
         self.update_metadata_panel(self.metadata_dict)
         self.refresh_canvas(safe_copy)
+        # Youssra-Phase2: processing operations change the image, so stale template overlays are cleared.
+        self.clear_template_match(show_message=False, clear_template=True)
         return True
 
     def apply_action(self, action_func, *args, **kwargs):
@@ -1207,6 +1337,136 @@ class UIManager:
                 outline="",
             )
     # Bahr-Phase2 END: ROI histogram display
+
+    # Youssra-Phase2 START: geometric transform UI
+    def on_apply_rotation(self):
+        if not self._require_image():
+            return
+        angle = self._parse_float(self.rotation_angle_input, "Rotation angle")
+        if angle is None:
+            return
+
+        self._set_status(f"Applying rotation ({angle:.2f} degrees) ...", "busy")
+        ok = self.apply_action(spatial_engine.rotate_image, angle)
+        if ok:
+            self.clear_template_match(show_message=False, clear_template=True)
+            self._set_status(f"Rotation applied ({angle:.2f} degrees).", "success")
+
+    def on_apply_shear(self):
+        if not self._require_image():
+            return
+        shear_x = self._parse_float(self.shear_x_input, "Shear X")
+        shear_y = self._parse_float(self.shear_y_input, "Shear Y")
+        if shear_x is None or shear_y is None:
+            return
+
+        self._set_status(f"Applying shear (x={shear_x:.2f}, y={shear_y:.2f}) ...", "busy")
+        ok = self.apply_action(spatial_engine.shear_image, shear_x, shear_y)
+        if ok:
+            self.clear_template_match(show_message=False, clear_template=True)
+            self._set_status(f"Shear applied (x={shear_x:.2f}, y={shear_y:.2f}).", "success")
+    # Youssra-Phase2 END: geometric transform UI
+
+    # Youssra-Phase2 START: template matching UI
+    def enter_template_selection_mode(self):
+        if not self._require_image():
+            return
+        self.selection_mode = "template"
+        self.template_match_label.configure(text="Mode: template selection\ndrag on image")
+        self._set_status("Template selection mode: drag a rectangle on the image.", "info")
+
+    def save_selected_template(self):
+        if not self._require_image():
+            return
+        if self.selected_template_roi is None:
+            self._set_status("Please select a template region first.", "warning")
+            return
+
+        x1, y1, x2, y2 = self.selected_template_roi
+        if x2 <= x1 or y2 <= y1:
+            self._set_status("Please select a valid template region.", "warning")
+            return
+
+        template = self.current_image_array[y1:y2, x1:x2]
+        if template.size == 0:
+            self._set_status("Please select a valid template region.", "warning")
+            return
+
+        self.selected_template = template.copy()
+        self.selection_mode = "roi"
+        h, w = self.selected_template.shape[:2]
+        self.template_match_label.configure(
+            text=f"Template saved:\nSize: {w} x {h}\nMode: ROI statistics"
+        )
+        self._set_status("Template saved. ROI statistics mode restored.", "success")
+
+    def _draw_template_match_box(self, result):
+        if self._match_box_id is not None:
+            self.canvas.delete(self._match_box_id)
+            self._match_box_id = None
+
+        x1, y1 = result["top_left"]
+        x2, y2 = result["bottom_right"]
+        cx1, cy1 = self._image_to_canvas_xy(x1, y1)
+        cx2, cy2 = self._image_to_canvas_xy(x2, y2)
+        self._match_box_id = self.canvas.create_rectangle(
+            cx1, cy1, cx2, cy2,
+            outline=CLR_DANGER,
+            width=3,
+        )
+        self.canvas.tag_raise(self._match_box_id)
+
+    def run_template_matching(self):
+        if not self._require_image():
+            return
+        if self.selected_template is None:
+            self._set_status("Please select a template first.", "warning")
+            return
+
+        self._set_status("Running Fourier template matching ...", "busy")
+        try:
+            result = frequency_engine.template_matching_fourier(
+                self.current_image_array,
+                self.selected_template,
+            )
+        except ValueError as e:
+            self._set_status(str(e), "warning")
+            return
+        except Exception as e:
+            self._set_status(f"Template matching error: {str(e)[:60]}", "error")
+            return
+
+        self.last_template_match = result
+        self._draw_template_match_box(result)
+        x1, y1 = result["top_left"]
+        x2, y2 = result["bottom_right"]
+        self.template_match_label.configure(
+            text=(
+                f"Match box:\n"
+                f"({x1}, {y1}) to ({x2}, {y2})\n"
+                f"Score: {result['score']:.2f}"
+            )
+        )
+        self._set_status("Template match complete. Bounding box displayed.", "success")
+
+    def clear_template_match(self, show_message=True, clear_template=True):
+        self.selected_template_roi = None
+        self.last_template_match = None
+        self._template_drag_start = None
+        if clear_template:
+            self.selected_template = None
+        if self._template_rect_id is not None:
+            self.canvas.delete(self._template_rect_id)
+            self._template_rect_id = None
+        if self._match_box_id is not None:
+            self.canvas.delete(self._match_box_id)
+            self._match_box_id = None
+        self.selection_mode = "roi"
+        if hasattr(self, "template_match_label"):
+            self.template_match_label.configure(text="Mode: ROI statistics")
+        if show_message:
+            self._set_status("Template selection and match box cleared.", "info")
+    # Youssra-Phase2 END: template matching UI
 
     # Bahr-Phase2
     def clear_roi(self, show_message=True):
@@ -1539,6 +1799,8 @@ class UIManager:
             self.redo_history         = []
             self.metadata_dict        = metadata
             self.clear_roi(show_message=False)
+            # Youssra-Phase2: a new image invalidates any saved template or match box.
+            self.clear_template_match(show_message=False, clear_template=True)
 
             self.refresh_canvas(self.current_image_array)
             self.update_metadata_panel(self.metadata_dict)
@@ -1781,6 +2043,8 @@ class UIManager:
         self.image_history       = [self.original_image_array.copy()]  # ← spec: fresh history
         self.redo_history        = []
         self.clear_roi(show_message=False)
+        # Youssra-Phase2: reset restores a different image state, so template overlays are cleared.
+        self.clear_template_match(show_message=False, clear_template=True)
 
         h, w = self.current_image_array.shape[:2]
         self.metadata_dict["Width"]  = str(w)
