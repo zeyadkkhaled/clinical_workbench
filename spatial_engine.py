@@ -108,9 +108,9 @@ def _equalize_block(block):
     return mapping[block]
 
 
-# Bahr-Phase1-Fix START: Smooth local histogram equalization
+# Phase 1 Changes START: Smooth Local Histogram Equalization
 def _equalization_mapping(block):
-    """Build a 256-value equalization lookup table for one local tile."""
+    """Build a 256-value CDF equalization lookup table for one local tile."""
     histogram = _manual_histogram(block)
     cdf = np.cumsum(histogram).astype(np.int64)
 
@@ -125,7 +125,7 @@ def _equalization_mapping(block):
 
     equalized_values = (cdf - cdf_min) * 255.0 / (total_pixels - cdf_min)
     return np.clip(np.round(equalized_values), 0, 255).astype(np.uint8)
-# Bahr-Phase1-Fix END: Smooth local histogram equalization
+# Phase 1 Changes END: Smooth Local Histogram Equalization
 
 
 # Author: Ahmed Hassan Bahr
@@ -235,6 +235,7 @@ def zoom_linear(image_array, scale):
         return None
 
 # Author: Ahmed Hassan Bahr
+# Phase 1 Changes START: Smooth Local Histogram Equalization
 def local_histogram_equalization(image_array, block_size):
     """
     Applies smooth local histogram equalization from scratch.
@@ -242,11 +243,10 @@ def local_histogram_equalization(image_array, block_size):
     RGB/RGBA input is converted to grayscale first using:
         gray = 0.299*R + 0.587*G + 0.114*B
 
-    # Bahr-Phase1-Fix START: Smooth local histogram equalization
-    This version reduces block artifacts by calculating one histogram/CDF
-    mapping per tile, then bilinearly interpolating the four neighboring tile
-    mappings for each pixel instead of pasting independently equalized blocks.
-    # Bahr-Phase1-Fix END: Smooth local histogram equalization
+    Phase 1 Changes:
+    The old method caused block artifacts because each tile used a separate
+    mapping with hard borders. This NumPy-only version reduces those artifacts
+    by bilinearly interpolating between neighboring tile CDF mappings.
     """
     try:
         if not _is_valid_image_array(image_array) or block_size <= 0:
@@ -264,10 +264,9 @@ def local_histogram_equalization(image_array, block_size):
         if block_size <= 1:
             return gray.copy()
 
-        if block_size >= max(height, width):
+        if block_size >= min(height, width):
             return _equalize_block(gray)
 
-        # Bahr-Phase1-Fix START: Smooth local histogram equalization
         row_starts = list(range(0, height, block_size))
         col_starts = list(range(0, width, block_size))
         row_bounds = [(start, min(start + block_size, height)) for start in row_starts]
@@ -316,10 +315,10 @@ def local_histogram_equalization(image_array, block_size):
             blended = top * (1.0 - y_weight) + bottom * y_weight
             enhanced[row] = np.clip(np.round(blended), 0, 255).astype(np.uint8)
 
-        # Bahr-Phase1-Fix END: Smooth local histogram equalization
         return enhanced
     except Exception:
         return None
+# Phase 1 Changes END: Smooth Local Histogram Equalization
 
 # Author: Zeyad Khaled
 def apply_2d_convolution(image_array, kernel):
