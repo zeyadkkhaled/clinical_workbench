@@ -78,6 +78,54 @@ def _rgb_to_grayscale(image_array):
     return np.clip(gray, 0, 255).astype(np.uint8)
 
 
+# Youssra-Phase2
+def _transform_input_uint8(image_array):
+    """Prepare grayscale/RGB data for geometric transforms, ignoring alpha safely."""
+    image = _to_uint8(image_array)
+    if image is None:
+        return None
+    if image.ndim == 3 and image.shape[2] == 4:
+        image = image[:, :, :3]
+    if image.ndim == 3 and image.shape[2] == 1:
+        image = image[:, :, 0]
+    return np.ascontiguousarray(image)
+
+
+# Youssra-Phase2 START: custom bilinear sampler
+def _bilinear_sample(image, source_x, source_y):
+    """
+    Sample 2D grayscale or 3D color image coordinates with manual bilinear interpolation.
+
+    source_x/source_y may be arrays. The caller is responsible for masking invalid
+    coordinates; this helper clips edge neighbor indices so border pixels are safe.
+    """
+    height, width = image.shape[:2]
+    x = np.asarray(source_x, dtype=np.float64)
+    y = np.asarray(source_y, dtype=np.float64)
+
+    x0 = np.clip(np.floor(x).astype(np.int64), 0, width - 1)
+    y0 = np.clip(np.floor(y).astype(np.int64), 0, height - 1)
+    x1 = np.clip(x0 + 1, 0, width - 1)
+    y1 = np.clip(y0 + 1, 0, height - 1)
+
+    dx = x - x0
+    dy = y - y0
+
+    top_left = image[y0, x0].astype(np.float64)
+    top_right = image[y0, x1].astype(np.float64)
+    bottom_left = image[y1, x0].astype(np.float64)
+    bottom_right = image[y1, x1].astype(np.float64)
+
+    if image.ndim == 3:
+        dx = dx[..., np.newaxis]
+        dy = dy[..., np.newaxis]
+
+    top = top_left * (1.0 - dx) + top_right * dx
+    bottom = bottom_left * (1.0 - dx) + bottom_right * dx
+    return top * (1.0 - dy) + bottom * dy
+# Youssra-Phase2 END: custom bilinear sampler
+
+
 def _manual_histogram(block):
     """
     Computes a 256-bin histogram manually for a uint8 image block using fast NumPy bincount.
@@ -436,13 +484,133 @@ def apply_median_filter(image_array, kernel_size):
     return output.astype(image_array.dtype)
 
 # Author: Youssra Hatem
-def rotate_image(image_array, angle):
-    """Rotates the image by a given angle."""
-    # TODO (Youssra): Implement rotation with custom bilinear interpolation
-    return None
+# Youssra-Phase2 START: rotate_image
+def rotate_image(image_array, angle_degrees):
+    """Rotate an image from scratch using inverse mapping and bilinear sampling."""
+    if not _is_valid_image_array(image_array):
+        raise ValueError("Invalid image array.")
+
+    try:
+        angle = float(angle_degrees)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Rotation angle must be a valid number.") from exc
+
+    image = _transform_input_uint8(image_array)
+    if image is None:
+        raise ValueError("Invalid image array.")
+
+    height, width = image.shape[:2]
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
+    radians = np.deg2rad(angle)
+    cos_a = np.cos(radians)
+    sin_a = np.sin(radians)
+
+    corners = np.array(
+        [
+            [0.0, 0.0],
+            [width - 1.0, 0.0],
+            [0.0, height - 1.0],
+            [width - 1.0, height - 1.0],
+        ],
+        dtype=np.float64,
+    )
+    centered = corners - np.array([center_x, center_y])
+    rotated_x = centered[:, 0] * cos_a - centered[:, 1] * sin_a
+    rotated_y = centered[:, 0] * sin_a + centered[:, 1] * cos_a
+
+    min_x = np.floor(np.min(rotated_x))
+    max_x = np.ceil(np.max(rotated_x))
+    min_y = np.floor(np.min(rotated_y))
+    max_y = np.ceil(np.max(rotated_y))
+    output_width = max(1, int(max_x - min_x + 1))
+    output_height = max(1, int(max_y - min_y + 1))
+
+    out_y, out_x = np.indices((output_height, output_width), dtype=np.float64)
+    transformed_x = out_x + min_x
+    transformed_y = out_y + min_y
+
+    source_x = transformed_x * cos_a + transformed_y * sin_a + center_x
+    source_y = -transformed_x * sin_a + transformed_y * cos_a + center_y
+    valid = (
+        (source_x >= 0.0)
+        & (source_x <= width - 1.0)
+        & (source_y >= 0.0)
+        & (source_y <= height - 1.0)
+    )
+
+    sampled = _bilinear_sample(image, source_x, source_y)
+    if image.ndim == 2:
+        output = np.zeros((output_height, output_width), dtype=np.float64)
+        output[valid] = sampled[valid]
+    else:
+        output = np.zeros((output_height, output_width, image.shape[2]), dtype=np.float64)
+        output[valid] = sampled[valid]
+
+    return np.clip(np.round(output), 0, 255).astype(np.uint8)
+# Youssra-Phase2 END: rotate_image
 
 # Author: Youssra Hatem
-def shear_image(image_array, shear_factor):
-    """Shears the image by a given factor."""
-    # TODO (Youssra): Implement shearing with custom bilinear interpolation
-    return None
+# Youssra-Phase2 START: shear_image
+def shear_image(image_array, shear_x=0.0, shear_y=0.0):
+    """Shear an image from scratch using inverse mapping and bilinear sampling."""
+    if not _is_valid_image_array(image_array):
+        raise ValueError("Invalid image array.")
+
+    try:
+        sx = float(shear_x)
+        sy = float(shear_y)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Shear values must be valid numbers.") from exc
+
+    det = 1.0 - sx * sy
+    if abs(det) < 1e-8:
+        raise ValueError("Shear matrix is unstable; choose smaller shear values.")
+
+    image = _transform_input_uint8(image_array)
+    if image is None:
+        raise ValueError("Invalid image array.")
+
+    height, width = image.shape[:2]
+    corners = np.array(
+        [
+            [0.0, 0.0],
+            [width - 1.0, 0.0],
+            [0.0, height - 1.0],
+            [width - 1.0, height - 1.0],
+        ],
+        dtype=np.float64,
+    )
+    sheared_x = corners[:, 0] + sx * corners[:, 1]
+    sheared_y = sy * corners[:, 0] + corners[:, 1]
+
+    min_x = np.floor(np.min(sheared_x))
+    max_x = np.ceil(np.max(sheared_x))
+    min_y = np.floor(np.min(sheared_y))
+    max_y = np.ceil(np.max(sheared_y))
+    output_width = max(1, int(max_x - min_x + 1))
+    output_height = max(1, int(max_y - min_y + 1))
+
+    out_y, out_x = np.indices((output_height, output_width), dtype=np.float64)
+    transformed_x = out_x + min_x
+    transformed_y = out_y + min_y
+
+    source_x = (transformed_x - sx * transformed_y) / det
+    source_y = (-sy * transformed_x + transformed_y) / det
+    valid = (
+        (source_x >= 0.0)
+        & (source_x <= width - 1.0)
+        & (source_y >= 0.0)
+        & (source_y <= height - 1.0)
+    )
+
+    sampled = _bilinear_sample(image, source_x, source_y)
+    if image.ndim == 2:
+        output = np.zeros((output_height, output_width), dtype=np.float64)
+        output[valid] = sampled[valid]
+    else:
+        output = np.zeros((output_height, output_width, image.shape[2]), dtype=np.float64)
+        output[valid] = sampled[valid]
+
+    return np.clip(np.round(output), 0, 255).astype(np.uint8)
+# Youssra-Phase2 END: shear_image
