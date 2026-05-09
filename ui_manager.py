@@ -74,6 +74,13 @@ class UIManager:
         self.ai_video_path        = None
         self.ai_video_results     = []
 
+        # Author: Zeyad Khaled - Phase 2: Notch filtering / magnitude spectrum state
+        self._notch_centers       = []          # list of (u, v) in shifted-freq coords
+        self._notch_marker_ids    = []          # canvas oval IDs for notch markers
+        self._magnitude_active    = False       # True while the spectrum is displayed
+        self._magnitude_array     = None        # cached log-magnitude for display
+        self._notch_mask          = None        # last generated notch mask
+
         # Canvas display references (GC anchors)
         self._photo_image          = None
         self._canvas_image_id      = None
@@ -361,7 +368,7 @@ class UIManager:
     # Author: Zeyad Khaled
     def _build_right_panel(self):
         self.right_panel = ctk.CTkFrame(
-            self.master, width=250, corner_radius=0, fg_color=CLR_BG_SIDEBAR,
+            self.master, width=300, corner_radius=0, fg_color=CLR_BG_SIDEBAR,
         )
         self.right_panel.grid(row=0, column=2, sticky="nsew")
         self.right_panel.grid_propagate(False)
@@ -473,7 +480,13 @@ class UIManager:
             font=FONT_LABEL,
             text_color=CLR_TEXT_SEC,
         )
-        self.history_label.pack(fill="x", padx=10, pady=(0, 8))
+        self.history_label.pack(fill="x", padx=10, pady=(0, 4))
+        self.btn_split = ctk.CTkButton(
+            pipeline_card, text="Toggle Split View", command=self.toggle_split_view,
+            font=FONT_BUTTON, fg_color=CLR_CYAN, hover_color=CLR_CYAN_HOVER,
+            corner_radius=6, height=32,
+        )
+        self.btn_split.pack(fill="x", padx=8, pady=(0, 8))
 
         ctk.CTkLabel(
             self.right_panel, text="  Metadata",
@@ -576,6 +589,10 @@ class UIManager:
     # Bahr-Phase2
     def _on_roi_start(self, event):
         """Begin drawing a rectangular ROI on the image canvas."""
+        # Author: Zeyad Khaled - Phase 2: route clicks to notch placement when spectrum is active
+        if self._magnitude_active:
+            self._on_spectrum_click(event)
+            return
         if self.current_image_array is None:
             return
         if self.selection_mode == "template":
@@ -712,21 +729,51 @@ class UIManager:
     # Sidebar widget helpers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _make_card(self, title):
-        """Returns the content frame of a new sidebar section card."""
+    def _make_card(self, title, expanded=False):
+        """Returns the content frame of a collapsible sidebar section card.
+
+        Clicking the header toggles visibility of the content area.
+        A ▾/▸ chevron indicates the current state.
+        """
         outer = ctk.CTkFrame(self.sidebar_frame, fg_color=CLR_BG_CARD, corner_radius=10)
         outer.pack(fill="x", padx=8, pady=(0, 8))
 
-        hdr = ctk.CTkFrame(outer, fg_color=CLR_BG_CARD_HDR, corner_radius=7, height=28)
+        hdr = ctk.CTkFrame(outer, fg_color=CLR_BG_CARD_HDR, corner_radius=7, height=36,
+                           cursor="hand2")
         hdr.pack(fill="x", padx=4, pady=(4, 0))
         hdr.pack_propagate(False)
-        ctk.CTkLabel(
-            hdr, text=f"  {title}",
+
+        chevron_text = "▾" if expanded else "▸"
+        chevron = ctk.CTkLabel(
+            hdr, text=chevron_text,
+            font=("Segoe UI", 11, "bold"), text_color=CLR_ACCENT, anchor="w",
+            width=16,
+        )
+        chevron.pack(side="left", padx=(8, 0))
+
+        title_label = ctk.CTkLabel(
+            hdr, text=f" {title}",
             font=FONT_SECTION_HDG, text_color=CLR_TEXT_HDG, anchor="w",
-        ).pack(fill="both", expand=True, padx=6)
+        )
+        title_label.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
         content = ctk.CTkFrame(outer, fg_color="transparent")
-        content.pack(fill="x", padx=6, pady=(4, 6))
+        if expanded:
+            content.pack(fill="x", padx=6, pady=(4, 6))
+
+        def toggle(event=None):
+            if content.winfo_ismapped():
+                content.pack_forget()
+                chevron.configure(text="▸")
+            else:
+                content.pack(fill="x", padx=6, pady=(4, 6))
+                chevron.configure(text="▾")
+
+        # Bind click to header frame, chevron label, and title label
+        hdr.bind("<Button-1>", toggle)
+        chevron.bind("<Button-1>", toggle)
+        title_label.bind("<Button-1>", toggle)
+
         return content
 
     def _muted_label(self, parent, text):
@@ -786,7 +833,7 @@ class UIManager:
 
     def build_sidebar_controls(self):
         # ── I/O ──────────────────────────────────────────────────────────────
-        c = self._make_card("I / O  Controls")
+        c = self._make_card("I / O  Controls", expanded=True)
         self.btn_load = self._op_btn(c, "Load Image", self.on_load_image, fg=CLR_SUCCESS, hover=CLR_SUCCESS_HVR)
         self.btn_save = self._op_btn(c, "Save Image", self.on_save_image, fg=CLR_CYAN,    hover=CLR_CYAN_HOVER)
 
@@ -880,6 +927,31 @@ class UIManager:
         )
         # Youssra-Phase2 END: template matching UI
 
+        # Author: Zeyad Khaled - Phase 2 START: Frequency / Notch Filtering UI
+        c = self._make_card("Frequency Filters")
+        self._muted_label(c, "Notch Filter Shape")
+        self.notch_shape_var = ctk.StringVar(value="Ideal")
+        self.notch_shape_dropdown = self._styled_optionmenu(
+            c, ["Ideal", "Butterworth", "Gaussian"], self.notch_shape_var,
+        )
+        self._muted_label(c, "Notch Radius  (pixels)")
+        self.notch_radius_input = self._styled_entry(c, default="10")
+        self._muted_label(c, "Butterworth Order")
+        self.notch_order_input = self._styled_entry(c, default="2")
+        self.btn_show_spectrum = self._op_btn(
+            c, "Show Magnitude Spectrum", self.on_show_magnitude_spectrum,
+            fg=CLR_CYAN, hover=CLR_CYAN_HOVER,
+        )
+        self._muted_label(c, "Click on spectrum to place notches.")
+        self.btn_apply_notch = self._op_btn(
+            c, "Apply Notch Filter", self.on_apply_notch_filter,
+        )
+        self.btn_clear_notch = self._op_btn(
+            c, "Clear Notch Points", self.on_clear_notch,
+            fg=CLR_WARNING, hover=CLR_WARNING_HVR,
+        )
+        # Author: Zeyad Khaled - Phase 2 END: Frequency / Notch Filtering UI
+
         # ── Morphology ────────────────────────────────────────────────────────
         c = self._make_card("Morphology")
 
@@ -917,9 +989,6 @@ class UIManager:
         self.btn_closing  = self._op_btn(c, "Closing",             lambda: self.on_morphology("close"))
         self.btn_boundary = self._op_btn(c, "Boundary Extraction", lambda: self.on_morphology("boundary"))
 
-        # ── Pipeline ──────────────────────────────────────────────────────────
-        c = self._make_card("Pipeline Controls")
-        self.btn_split = self._op_btn(c, "Toggle Split View", self.toggle_split_view, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status / info helpers
@@ -937,6 +1006,12 @@ class UIManager:
         self.status_bar.configure(fg_color=bg)
         self.status_label.configure(text=f"  {msg}", text_color=fg)
         self.master.update_idletasks()
+
+        # Pop up a centered dialog for errors and warnings so the user never misses them
+        if level == "error":
+            messagebox.showerror("Error", msg)
+        elif level == "warning":
+            messagebox.showwarning("Warning", msg)
 
     def _update_dim_label(self):
         if self.current_image_array is not None:
@@ -1026,7 +1101,6 @@ class UIManager:
 
     def show_error(self, message):
         self._set_status(message[:90], "error")
-        messagebox.showerror("Error", message)
 
     def show_info(self, message):
         self._set_status(message[:90], "success")
@@ -1218,7 +1292,6 @@ class UIManager:
             return self._commit_result(new_image)
         except Exception as e:
             self._set_status(f"Error: {str(e)[:70]}", "error")
-            messagebox.showerror("Engine Error", str(e))
             return False
 
     def _apply_compound_morph(self, funcs, se, label):
@@ -1240,7 +1313,6 @@ class UIManager:
             return self._commit_result(img)
         except Exception as e:
             self._set_status(f"Error in {label}: {str(e)[:60]}", "error")
-            messagebox.showerror("Engine Error", str(e))
             return False
 
     def _apply_boundary_extraction(self, se, label):
@@ -1268,7 +1340,6 @@ class UIManager:
             return self._commit_result(boundary)
         except Exception as e:
             self._set_status(f"Error in {label}: {str(e)[:60]}", "error")
-            messagebox.showerror("Engine Error", str(e))
             return False
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1865,7 +1936,6 @@ class UIManager:
                 f"Please use a smaller scale factor."
             )
             self._set_status("Zoom output too large — use a smaller scale.", "error")
-            messagebox.showerror("Image Too Large", msg)
             return
 
         interp = self.interp_type_var.get()
@@ -1989,6 +2059,158 @@ class UIManager:
 
         if ok:
             self._set_status(f"{label} applied ({shape} SE, size={size}).", "success")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Author: Zeyad Khaled - Phase 2: Frequency / Notch Filter callbacks
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Author: Zeyad Khaled - Phase 2
+    def _compute_magnitude_spectrum(self, image_array):
+        """Return a log-scaled magnitude spectrum image (uint8, grayscale)."""
+        arr = np.asarray(image_array)
+        if arr.ndim == 3:
+            # Convert to grayscale for spectrum display
+            arr = (0.299 * arr[:, :, 0].astype(np.float64)
+                   + 0.587 * arr[:, :, 1].astype(np.float64)
+                   + 0.114 * arr[:, :, 2].astype(np.float64))
+        f_transform = np.fft.fft2(arr.astype(np.float64))
+        f_shifted   = np.fft.fftshift(f_transform)
+        magnitude   = np.abs(f_shifted)
+        # Log-scale for visibility (avoid log(0))
+        log_mag = np.log1p(magnitude)
+        # Normalize to 0-255
+        mn, mx = log_mag.min(), log_mag.max()
+        if mx > mn:
+            log_mag = ((log_mag - mn) / (mx - mn) * 255.0)
+        else:
+            log_mag = np.zeros_like(log_mag)
+        return log_mag.astype(np.uint8)
+
+    # Author: Zeyad Khaled - Phase 2
+    def on_show_magnitude_spectrum(self):
+        """Display the centred log-magnitude spectrum on the canvas."""
+        if not self._require_image():
+            return
+        self._set_status("Computing magnitude spectrum …", "busy")
+        try:
+            self._magnitude_array = self._compute_magnitude_spectrum(self.current_image_array)
+            self._magnitude_active = True
+            self._notch_centers = []
+            self._notch_mask = None
+            self._clear_notch_markers()
+            self.refresh_canvas(self._magnitude_array)
+            self._set_status(
+                "Magnitude spectrum displayed. Click to place notch centres, then Apply Notch.",
+                "success",
+            )
+        except Exception as e:
+            self._set_status(f"Spectrum error: {str(e)[:60]}", "error")
+
+    # Author: Zeyad Khaled - Phase 2
+    def _on_spectrum_click(self, event):
+        """Capture a (u, v) notch centre from a click on the magnitude spectrum."""
+        if self._magnitude_array is None:
+            return
+        # Map canvas click to image-pixel coordinate
+        cx = int(self.canvas.canvasx(event.x))
+        cy = int(self.canvas.canvasy(event.y))
+        h, w = self._magnitude_array.shape[:2]
+        if cx < 0 or cy < 0 or cx >= w or cy >= h:
+            return
+
+        # Convert pixel (cy, cx) to shifted-frequency offset from DC
+        u = cy - h // 2
+        v = cx - w // 2
+        self._notch_centers.append((u, v))
+
+        # Draw a small red marker on the spectrum (and its conjugate)
+        r = 5
+        oid = self.canvas.create_oval(
+            cx - r, cy - r, cx + r, cy + r,
+            outline=CLR_DANGER, width=2,
+        )
+        self._notch_marker_ids.append(oid)
+        # Conjugate marker
+        conj_cx, conj_cy = w // 2 + (-v), h // 2 + (-u)
+        if 0 <= conj_cx < w and 0 <= conj_cy < h:
+            oid2 = self.canvas.create_oval(
+                conj_cx - r, conj_cy - r, conj_cx + r, conj_cy + r,
+                outline=CLR_WARNING, width=2,
+            )
+            self._notch_marker_ids.append(oid2)
+        self._set_status(
+            f"Notch #{len(self._notch_centers)} at freq ({u}, {v}). "
+            f"Conjugate at ({-u}, {-v}). Click Apply Notch when ready.",
+            "info",
+        )
+
+    # Author: Zeyad Khaled - Phase 2
+    def on_apply_notch_filter(self):
+        """Generate the notch mask from collected centres and apply it."""
+        if not self._require_image():
+            return
+        if not self._notch_centers:
+            self._set_status("No notch centres selected. Show spectrum and click first.", "warning")
+            return
+
+        radius = self._parse_positive_float(self.notch_radius_input, "Notch radius")
+        if radius is None:
+            return
+
+        order_val = self._parse_positive_int(self.notch_order_input, "Butterworth order")
+        if order_val is None:
+            return
+
+        shape_name = self.notch_shape_var.get().strip().lower()
+        img = self.current_image_array
+        h, w = img.shape[:2]
+
+        self._set_status(f"Generating {shape_name} notch filter …", "busy")
+        try:
+            self._notch_mask = frequency_engine.generate_notch_filter(
+                shape=(h, w),
+                centers=self._notch_centers,
+                radius=radius,
+                filter_type=shape_name,
+                order=order_val,
+            )
+            result = frequency_engine.apply_notch_filter(img, self._notch_mask)
+            if result is None:
+                self._set_status("Notch filter returned None.", "warning")
+                return
+
+            # Exit spectrum display mode and commit the filtered image
+            self._magnitude_active = False
+            self._magnitude_array = None
+            self._clear_notch_markers()
+            self._commit_result(result)
+            self._set_status(
+                f"Notch filter applied ({shape_name}, r={radius}, "
+                f"{len(self._notch_centers)} centres).",
+                "success",
+            )
+        except Exception as e:
+            self._set_status(f"Notch filter error: {str(e)[:60]}", "error")
+            import traceback; traceback.print_exc()
+
+    # Author: Zeyad Khaled - Phase 2
+    def _clear_notch_markers(self):
+        """Delete all notch marker ovals from the canvas."""
+        for oid in self._notch_marker_ids:
+            self.canvas.delete(oid)
+        self._notch_marker_ids = []
+
+    # Author: Zeyad Khaled - Phase 2
+    def on_clear_notch(self):
+        """Clear all notch centres and return to normal image display."""
+        self._clear_notch_markers()
+        self._notch_centers = []
+        self._notch_mask = None
+        self._magnitude_active = False
+        self._magnitude_array = None
+        if self.current_image_array is not None:
+            self.refresh_canvas(self.current_image_array)
+        self._set_status("Notch points cleared. Normal view restored.", "info")
 
     # Author: Zeyad Khaled
     def on_undo(self):
