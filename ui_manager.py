@@ -67,10 +67,21 @@ class UIManager:
         # Owner: Bahr - AI Segmentation Bonus
         # AI state is intentionally separate from current_image_array/image_history.
         self.ai_model             = None
-        self.ai_model_path        = None
+        # AI-Segmentation
+        self.ai_model_path        = "ai_models/polyp_model.keras"
         self.ai_image             = None
         self.ai_mask              = None
         self.ai_overlay           = None
+        self.ai_confidence        = None
+        self.ai_display_mode      = None
+        # AI-Segmentation START: auto-load and RGB fix
+        self.ai_input_source      = None
+        self.ai_image_mode        = None
+        # AI-Segmentation END: auto-load and RGB fix
+        # AI-Segmentation START: robust upload/analyze/clear fix
+        self.ai_rgb_file_path     = None   # path of last AI-only RGB upload
+        self.ai_image_was_grayscale = False  # flagged when pipeline gray→RGB copy used
+        # AI-Segmentation END: robust upload/analyze/clear fix
         self.ai_video_path        = None
         self.ai_video_results     = []
 
@@ -89,6 +100,23 @@ class UIManager:
         self._display_image_size    = (0, 0)
         self._display_to_array_scale = (1.0, 1.0)
         self._ai_preview_photos     = {}
+        # AI-Segmentation START: PhotoImage reference fix
+        self.ai_original_photo      = None
+        self.ai_overlay_photo       = None
+        self.ai_mask_photo          = None
+        # AI-Segmentation START: complete image reference audit
+        self.ai_display_photo       = None
+        self.ai_original_ctk_image  = None
+        self.ai_overlay_ctk_image   = None
+        self.ai_mask_ctk_image      = None
+        self.ai_original_canvas_item = None
+        self.ai_overlay_canvas_item = None
+        self.ai_mask_canvas_item    = None
+        # AI-Segmentation END: complete image reference audit
+        self.ai_original_image_id   = None
+        self.ai_overlay_image_id    = None
+        self.ai_mask_image_id       = None
+        # AI-Segmentation END: PhotoImage reference fix
 
         self.setup_ui()
 
@@ -231,10 +259,18 @@ class UIManager:
     # Owner: Zeyad - GUI / Pipeline Architecture
     def _build_ai_tab(self):
         """Build the isolated polyp AI workstation tab."""
+        # AI-Segmentation START: analyze rendering fix
+        # Row 0 = header (fixed), row 1 = content panels (expandable), row 2 = bottom bar (fixed).
+        # Explicit weight=0 on rows 0 and 2 prevents accidental expansion that could
+        # push controls into the preview columns.
+        self.ai_tab.grid_rowconfigure(0, weight=0)
         self.ai_tab.grid_rowconfigure(1, weight=1)
+        self.ai_tab.grid_rowconfigure(2, weight=0)
+        # Column 0 = AI controls (fixed width), columns 1-2 = preview panels (expand equally).
         self.ai_tab.grid_columnconfigure(0, weight=0)
         self.ai_tab.grid_columnconfigure(1, weight=1)
         self.ai_tab.grid_columnconfigure(2, weight=1)
+        # AI-Segmentation END: analyze rendering fix
 
         header = ctk.CTkFrame(self.ai_tab, fg_color=CLR_AI_PANEL, corner_radius=0)
         header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(10, 6))
@@ -254,70 +290,119 @@ class UIManager:
         )
         self.ai_status_label.pack(side="right", padx=4)
 
-        controls = self._make_ai_panel(self.ai_tab, "AI Controls")
-        controls.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=(0, 12))
-
-        upload_box = ctk.CTkFrame(
-            controls,
-            fg_color=CLR_BG_MAIN,
-            border_color=CLR_AI_ACCENT,
-            border_width=2,
+        # AI-Segmentation START: UX simplification
+        # AI-Segmentation START: analyze rendering fix
+        # All AI controls live exclusively inside self.ai_controls_frame (column 0).
+        # Preview panels are separate frames in columns 1-2.  No widget is ever
+        # packed/gridded into a preview frame from this controls section.
+        self.ai_controls_frame = ctk.CTkScrollableFrame(
+            self.ai_tab,
+            width=270,
+            fg_color=CLR_AI_CARD,
+            border_color=CLR_BORDER,
+            border_width=1,
             corner_radius=8,
         )
-        upload_box.pack(fill="x", padx=10, pady=(10, 8))
+        controls = self.ai_controls_frame  # local alias kept for readability below
+        controls.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=(0, 12))
+        # AI-Segmentation END: analyze rendering fix
         ctk.CTkLabel(
-            upload_box,
-            text="Drop-zone style upload\nimage or video for AI only",
-            font=FONT_LABEL_BOLD,
-            text_color=CLR_AI_ACCENT,
-            justify="center",
-        ).pack(fill="x", padx=12, pady=14)
-
-        self.ai_file_label = ctk.CTkLabel(
             controls,
-            text="No AI file selected",
+            text="AI Controls",
+            font=FONT_SECTION_HDG,
+            text_color=CLR_AI_ACCENT,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 4))
+
+        self.ai_info_label = ctk.CTkLabel(
+            controls,
+            text="Model loaded: No\nAI image ready: No\nMask ready: No\nConfidence: --",
             font=FONT_MONO,
             text_color=CLR_TEXT_SEC,
             wraplength=235,
             justify="left",
+            anchor="w",
         )
-        self.ai_file_label.pack(fill="x", padx=10, pady=(0, 8))
+        self.ai_info_label.pack(fill="x", padx=10, pady=(0, 8))
 
-        self._op_btn(controls, "Upload Image", self.on_ai_upload_image, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
-        self._op_btn(controls, "Upload Video", self.on_ai_upload_video, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
-        self._op_btn(controls, "Load AI Model", self.on_ai_load_model, fg=CLR_SUCCESS, hover=CLR_SUCCESS_HVR)
-        self._op_btn(controls, "Analyze Image", self.on_ai_analyze_image, fg=CLR_AI_ACCENT, hover=CLR_SUCCESS_HVR)
-        self._op_btn(controls, "Analyze Video", self.on_ai_analyze_video, fg=CLR_AI_ACCENT, hover=CLR_SUCCESS_HVR)
+        self._op_btn(
+            controls,
+            "Analyze Image",
+            self.on_ai_run_current_image,
+            fg=CLR_AI_ACCENT,
+            hover=CLR_SUCCESS_HVR,
+        )
+        self._ai_help_text(
+            controls,
+            "Loads the model if needed, uses the uploaded AI image if present, otherwise copies the current pipeline image.",
+        )
+        # AI-Segmentation START: auto-load and RGB fix
+        self._op_btn(controls, "Upload AI Image (RGB)", self.on_ai_upload_image, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
+        self._ai_help_text(controls, "Loads an RGB image directly for AI without using the normal pipeline loader.")
+        # AI-Segmentation END: auto-load and RGB fix
 
-        self._muted_label(controls, "Video frame step")
-        self.ai_frame_step_input = self._styled_entry(controls, default=str(AI_VIDEO_FRAME_STEP))
-        self._muted_label(controls, "Max frames")
-        self.ai_max_frames_input = self._styled_entry(controls, default=str(AI_VIDEO_MAX_FRAMES))
+        cfg = ai_segmentation_engine.load_ai_config()
+        self.ai_threshold_var = ctk.DoubleVar(value=float(cfg.get("threshold", 0.5)))
+        self._muted_label(controls, "AI Threshold")
+        self.ai_threshold_slider = ctk.CTkSlider(
+            controls,
+            from_=0.1,
+            to=0.9,
+            number_of_steps=80,
+            variable=self.ai_threshold_var,
+            progress_color=CLR_AI_ACCENT,
+            button_color=CLR_TEXT_HDG,
+            button_hover_color=CLR_TEXT_PRI,
+            command=lambda value: self.ai_threshold_label.configure(text=f"Threshold: {float(value):.2f}"),
+        )
+        self.ai_threshold_slider.pack(fill="x", padx=10, pady=(2, 0))
+        self.ai_threshold_label = ctk.CTkLabel(
+            controls,
+            text=f"Threshold: {self.ai_threshold_var.get():.2f}",
+            font=FONT_LABEL,
+            text_color=CLR_TEXT_SEC,
+        )
+        self.ai_threshold_label.pack(fill="x", padx=10, pady=(0, 6))
+        self._ai_help_text(
+            controls,
+            "Threshold controls how strict the mask is. Higher = smaller/stricter mask, lower = larger/more sensitive mask.",
+        )
 
-        self._op_btn(controls, "Show Mask", self.on_ai_show_mask, fg=CLR_ACCENT, hover=CLR_ACCENT_HOVER)
-        self._op_btn(controls, "Show Overlay", self.on_ai_show_overlay, fg=CLR_ACCENT, hover=CLR_ACCENT_HOVER)
-        self._op_btn(controls, "Save Result", self.on_ai_save_result, fg=CLR_WARNING, hover=CLR_WARNING_HVR)
+        self._op_btn(controls, "Toggle View: Overlay / Mask", self.on_ai_toggle_view)
+        self._ai_help_text(controls, "Switches between green overlay and black-white mask.")
+        self._op_btn(controls, "Save AI Result", self.on_ai_save_result, fg=CLR_WARNING, hover=CLR_WARNING_HVR)
+        self._ai_help_text(controls, "Saves the displayed AI mask or overlay.")
+        self._op_btn(controls, "Clear AI Workspace", self.on_ai_clear_workspace, fg=CLR_DANGER, hover=CLR_DANGER_HVR)
+        self._ai_help_text(controls, "Clears AI-only image, mask, overlay, and confidence.")
+        # AI-Segmentation END: UX simplification
 
-        original = self._make_ai_panel(self.ai_tab, "Original Image / Frame")
-        original.grid(row=1, column=1, sticky="nsew", padx=6, pady=(0, 12))
-        original.grid_rowconfigure(0, weight=1)
-        original.grid_columnconfigure(0, weight=1)
-        self.ai_original_preview = self._make_ai_preview_label(original, "No AI image loaded")
+        # AI-Segmentation START: analyze rendering fix
+        # Each preview panel is stored as a named instance attribute so layout can be
+        # audited at runtime.  Only the corresponding preview label is ever packed inside.
+        self.ai_original_preview_frame = self._make_ai_panel(self.ai_tab, "Original Image / Frame")
+        self.ai_original_preview_frame.grid(row=1, column=1, sticky="nsew", padx=6, pady=(0, 12))
+        # AI-Segmentation START: robust upload/analyze/clear fix
+        # tk.Canvas widgets — see _make_ai_preview_canvas for why canvas instead of CTkLabel.
+        self.ai_original_preview = self._make_ai_preview_canvas(self.ai_original_preview_frame, "No AI image loaded")
+        # AI-Segmentation END: robust upload/analyze/clear fix
 
-        overlay = self._make_ai_panel(self.ai_tab, "Segmentation Overlay")
-        overlay.grid(row=1, column=2, sticky="nsew", padx=(6, 12), pady=(0, 12))
-        overlay.grid_rowconfigure(0, weight=1)
-        overlay.grid_columnconfigure(0, weight=1)
-        self.ai_overlay_preview = self._make_ai_preview_label(overlay, "Overlay preview")
+        self.ai_overlay_preview_frame = self._make_ai_panel(self.ai_tab, "Segmentation Overlay")
+        self.ai_overlay_preview_frame.grid(row=1, column=2, sticky="nsew", padx=(6, 12), pady=(0, 12))
+        # AI-Segmentation START: robust upload/analyze/clear fix
+        self.ai_overlay_preview = self._make_ai_preview_canvas(self.ai_overlay_preview_frame, "Overlay preview")
+        # AI-Segmentation END: robust upload/analyze/clear fix
 
         bottom = ctk.CTkFrame(self.ai_tab, fg_color=CLR_AI_PANEL, corner_radius=0)
         bottom.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 12))
         bottom.grid_columnconfigure(0, weight=1)
         bottom.grid_columnconfigure(1, weight=2)
 
-        mask_panel = self._make_ai_panel(bottom, "Mask Preview")
-        mask_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self.ai_mask_preview = self._make_ai_preview_label(mask_panel, "Mask preview", height=170)
+        self.ai_mask_preview_frame = self._make_ai_panel(bottom, "Mask Preview")
+        self.ai_mask_preview_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        # AI-Segmentation START: robust upload/analyze/clear fix
+        self.ai_mask_preview = self._make_ai_preview_canvas(self.ai_mask_preview_frame, "Mask preview", height=170)
+        # AI-Segmentation END: robust upload/analyze/clear fix
+        # AI-Segmentation END: analyze rendering fix
 
         status_panel = self._make_ai_panel(bottom, "Diagnosis / Status")
         status_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -331,7 +416,11 @@ class UIManager:
             wrap="word",
         )
         self.ai_diagnosis_text.pack(fill="both", expand=True, padx=10, pady=10)
-        self.ai_diagnosis_text.insert("end", "Ready\nModel optional. Load a PyTorch inference model to run segmentation.")
+        self.ai_diagnosis_text.insert(
+            "end",
+            "Ready\nUpload an RGB image for AI or use the current pipeline image, then click Analyze Image. "
+            "The model loads automatically when needed.",
+        )
         self.ai_diagnosis_text.configure(state="disabled")
 
     def _make_ai_panel(self, parent, title):
@@ -345,18 +434,67 @@ class UIManager:
         ).pack(fill="x", padx=10, pady=(8, 0))
         return panel
 
+    # AI-Segmentation START: robust upload/analyze/clear fix
+    def _make_ai_preview_canvas(self, parent, placeholder_text, height=360):
+        """Create a tk.Canvas preview widget.
+
+        Using plain tk.Canvas instead of CTkLabel eliminates the 'pyimageX doesn't
+        exist' error class entirely:
+          - canvas.delete("all") removes the Tk-level image reference synchronously,
+            before we release any Python-side PhotoImage reference.
+          - There is no deferred _draw() or internal _image state to race against GC.
+          - canvas._ai_photo is the single persistent reference anchor on the widget.
+        """
+        canvas = tk.Canvas(
+            parent,
+            bg=CLR_BG_MAIN,
+            highlightthickness=0,
+            bd=0,
+            height=height,
+        )
+        canvas.pack(fill="both", expand=True, padx=10, pady=10)
+        canvas._ai_photo = None
+        canvas._ai_placeholder = placeholder_text
+        # Draw placeholder once the widget is laid out and has real dimensions.
+        canvas.bind("<Configure>", lambda e, c=canvas: self._ai_canvas_redraw_placeholder(c))
+        return canvas
+
+    def _ai_canvas_redraw_placeholder(self, canvas):
+        """Re-center placeholder text when the canvas is resized (only if no image)."""
+        if canvas._ai_photo is not None:
+            return  # image is showing — don't overwrite with placeholder
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w <= 1 or h <= 1:
+            return
+        canvas.delete("all")
+        canvas.create_text(
+            w // 2, h // 2,
+            text=canvas._ai_placeholder,
+            fill=CLR_TEXT_SEC,
+            font=FONT_LABEL,
+            justify="center",
+        )
+    # AI-Segmentation END: robust upload/analyze/clear fix
+
     def _make_ai_preview_label(self, parent, text, height=360):
+        """Legacy shim — kept so nothing else breaks; routes to canvas version."""
+        return self._make_ai_preview_canvas(parent, text, height)
+
+    # AI-Segmentation START: UX simplification
+    def _ai_help_text(self, parent, text):
         label = ctk.CTkLabel(
             parent,
             text=text,
             font=FONT_LABEL,
             text_color=CLR_TEXT_SEC,
-            fg_color=CLR_BG_MAIN,
-            corner_radius=8,
-            height=height,
+            wraplength=235,
+            justify="left",
+            anchor="w",
         )
-        label.pack(fill="both", expand=True, padx=10, pady=10)
+        label.pack(fill="x", padx=10, pady=(0, 6))
         return label
+    # AI-Segmentation END: UX simplification
 
     # Author: Zeyad Khaled
     def _build_right_panel(self):
@@ -1056,14 +1194,97 @@ class UIManager:
         self.ai_diagnosis_text.insert("end", message)
         self.ai_diagnosis_text.configure(state="disabled")
 
-    def _display_ai_preview(self, label, image_array, key, max_size=(520, 360)):
-        if image_array is None:
-            return
+    # AI-Segmentation START
+    def _update_ai_info(self):
+        confidence = "--" if self.ai_confidence is None else f"{self.ai_confidence:.3f}"
+        self.ai_info_label.configure(
+            text=(
+                f"Model loaded: {'Yes' if self.ai_model is not None else 'No'}\n"
+                f"AI image ready: {'Yes' if self.ai_image is not None else 'No'}\n"
+                f"AI model: {'Ready' if self.ai_model is not None else 'Not loaded'}\n"
+                f"AI image mode: {self.ai_image_mode or '--'}\n"
+                f"AI input source: {self.ai_input_source or '--'}\n"
+                f"Mask ready: {'Yes' if self.ai_mask is not None else 'No'}\n"
+                f"Confidence: {confidence}"
+            )
+        )
+    # AI-Segmentation END
 
+    # AI-Segmentation START: UX simplification
+    def _set_ai_completion_diagnosis(self, result):
+        self._set_ai_diagnosis(
+            "AI segmentation completed.\n"
+            f"Confidence: {self.ai_confidence:.3f}\n"
+            f"Threshold: {result['threshold']}\n"
+            f"Model input: {result['img_size']} x {result['img_size']}\n\n"
+            "Meaning:\n"
+            "Confidence is the average predicted probability inside the mask.\n"
+            f"Threshold means pixels above {result['threshold']} become foreground.\n"
+            "The AI result is displayed temporarily. Pipeline history is unchanged.\n\n"
+            "This model is trained for endoscopy polyp segmentation. Results on "
+            "non-endoscopy images are only a technical test and are not clinically meaningful."
+        )
+
+    def _ensure_ai_original_preview(self):
+        self._set_ai_preview_image("original", self.ai_image, "No AI image loaded")
+    # AI-Segmentation END: UX simplification
+
+    # AI-Segmentation START: PhotoImage reference fix
+    # AI-Segmentation START: persistent PhotoImage fix
+    # AI-Segmentation START: complete image reference audit
+    def _get_ai_preview_widget(self, target):
+        if target == "original":
+            return self.ai_original_preview, (520, 360)
+        if target == "overlay":
+            return self.ai_overlay_preview, (520, 360)
+        if target == "mask":
+            return self.ai_mask_preview, (420, 170)
+        raise ValueError(f"Unknown AI preview target: {target}")
+
+    def _set_ai_preview_reference(self, target, photo):
+        if target == "original":
+            self.ai_original_photo = photo
+            self.ai_original_ctk_image = None
+            self.ai_original_image_id = None
+            self.ai_original_canvas_item = None
+            return self.ai_original_photo
+        if target == "overlay":
+            self.ai_overlay_photo = photo
+            self.ai_overlay_ctk_image = None
+            self.ai_overlay_image_id = None
+            self.ai_overlay_canvas_item = None
+            return self.ai_overlay_photo
+        if target == "mask":
+            self.ai_mask_photo = photo
+            self.ai_mask_ctk_image = None
+            self.ai_mask_image_id = None
+            self.ai_mask_canvas_item = None
+            return self.ai_mask_photo
+        return photo
+
+    def _clear_ai_preview_reference(self, target):
+        if target == "original":
+            self.ai_original_photo = None
+            self.ai_original_ctk_image = None
+            self.ai_original_image_id = None
+            self.ai_original_canvas_item = None
+        elif target == "overlay":
+            self.ai_overlay_photo = None
+            self.ai_overlay_ctk_image = None
+            self.ai_overlay_image_id = None
+            self.ai_overlay_canvas_item = None
+        elif target == "mask":
+            self.ai_mask_photo = None
+            self.ai_mask_ctk_image = None
+            self.ai_mask_image_id = None
+            self.ai_mask_canvas_item = None
+
+    def _normalise_ai_preview_array(self, image_array):
         arr = np.asarray(image_array)
         if arr.ndim == 2:
             arr = np.stack([arr, arr, arr], axis=-1)
         if arr.dtype != np.uint8:
+            arr = np.nan_to_num(arr, nan=0.0, posinf=255.0, neginf=0.0)
             mn, mx = arr.min(), arr.max()
             if mx > mn:
                 arr = ((arr - mn) / (mx - mn) * 255).astype(np.uint8)
@@ -1071,12 +1292,113 @@ class UIManager:
                 arr = np.zeros_like(arr, dtype=np.uint8)
         if arr.ndim == 3 and arr.shape[2] == 4:
             arr = arr[:, :, :3]
+        if arr.ndim == 3 and arr.shape[2] > 3:
+            arr = arr[:, :, :3]
+        return np.clip(arr, 0, 255).astype(np.uint8)
 
+    # AI-Segmentation START: robust upload/analyze/clear fix
+    def _set_ai_preview(self, target, image_array_or_none, placeholder_text=None):
+        """Single safe entry-point for every AI preview update.
+
+        Safety contract (canvas-based implementation):
+          1. canvas.delete("all") is called FIRST — this synchronously removes the
+             Tk-level reference to any previously displayed PhotoImage, before any
+             Python-side reference is released.  The old PhotoImage can now be GC'd
+             without Tkinter ever seeing a dangling image name.
+          2. New PhotoImage is stored on self.* AND on canvas._ai_photo before
+             canvas.create_image() is called, so the photo is always alive while Tk
+             holds it.
+          This eliminates the 'pyimageX doesn't exist' error class entirely.
+        """
+        canvas, fallback_size = self._get_ai_preview_widget(target)
+        if placeholder_text is None:
+            placeholder_text = {"original": "No AI image loaded",
+                                 "overlay": "Overlay preview",
+                                 "mask": "Mask preview"}.get(target, "")
+
+        # ── Step 1: unconditionally wipe the canvas (removes Tk image ref) ──────
+        canvas.delete("all")
+        canvas._ai_photo = None
+
+        # ── Step 2: clear Python-side references for this slot ──────────────────
+        self._clear_ai_preview_reference(target)
+        self._ai_preview_photos.pop(target, None)
+
+        if image_array_or_none is None:
+            # Show placeholder text centered in whatever space is available.
+            w = canvas.winfo_width()
+            h = canvas.winfo_height()
+            if w > 1 and h > 1:
+                canvas.create_text(
+                    w // 2, h // 2,
+                    text=placeholder_text,
+                    fill=CLR_TEXT_SEC,
+                    font=FONT_LABEL,
+                    justify="center",
+                )
+            canvas._ai_placeholder = placeholder_text
+            return
+
+        # ── Step 3: build the new PhotoImage ────────────────────────────────────
+        arr = self._normalise_ai_preview_array(image_array_or_none)
         pil_img = Image.fromarray(arr)
-        pil_img.thumbnail(max_size, Image.LANCZOS)
-        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
-        self._ai_preview_photos[key] = ctk_img
-        label.configure(image=ctk_img, text="")
+
+        # Fit to canvas without upscaling.
+        cw = canvas.winfo_width()
+        ch = canvas.winfo_height()
+        max_w = cw if cw > 1 else fallback_size[0]
+        max_h = ch if ch > 1 else fallback_size[1]
+        iw, ih = pil_img.size
+        scale = min(max_w / max(1, iw), max_h / max(1, ih), 1.0)
+        if scale < 1.0:
+            pil_img = pil_img.resize(
+                (max(1, int(iw * scale)), max(1, int(ih * scale))),
+                Image.LANCZOS,
+            )
+
+        new_photo = ImageTk.PhotoImage(image=pil_img)
+
+        # ── Step 4: store BEFORE any canvas operation ────────────────────────────
+        # All three anchors must be in place so CPython's reference counter never
+        # drops the photo to zero while the canvas item holds the Tk image name.
+        self._set_ai_preview_reference(target, new_photo)   # self.ai_*_photo = new_photo
+        self.ai_display_photo = new_photo
+        self._ai_preview_photos[target] = new_photo
+        canvas._ai_photo = new_photo   # anchor on the canvas widget itself
+
+        # ── Step 5: draw ─────────────────────────────────────────────────────────
+        cx = max_w // 2
+        cy = max_h // 2
+        canvas.create_image(cx, cy, image=new_photo, anchor="center")
+        canvas._ai_placeholder = None
+
+    def _set_ai_preview_image(self, target, image_array_or_none, placeholder_text=None):
+        """Backward-compatible alias — routes to _set_ai_preview."""
+        self._set_ai_preview(target, image_array_or_none, placeholder_text)
+    # AI-Segmentation END: robust upload/analyze/clear fix
+
+    def _ai_preview_slot(self, label):
+        if label is getattr(self, "ai_original_preview", None):
+            return "original"
+        if label is getattr(self, "ai_overlay_preview", None):
+            return "overlay"
+        if label is getattr(self, "ai_mask_preview", None):
+            return "mask"
+        return None
+
+    def _display_ai_preview(self, label, image_array, key=None, max_size=None):
+        target = self._ai_preview_slot(label)
+        if target is None:
+            return
+        placeholders = {
+            "original": "No AI image loaded",
+            "overlay": "Overlay preview",
+            "mask": "Mask preview",
+        }
+        self._set_ai_preview_image(target, image_array, placeholders[target])
+    # AI-Segmentation END: persistent PhotoImage fix
+    # AI-Segmentation END: complete image reference audit
+    # AI-Segmentation END: PhotoImage reference fix
 
     def _parse_ai_video_limits(self):
         try:
@@ -1546,234 +1868,341 @@ class UIManager:
         )
         self._set_status("ROI statistics calculated and histogram displayed.", "success")
 
-    # Owner: Bahr - AI Segmentation Bonus
-    def on_ai_upload_image(self):
-        path = filedialog.askopenfilename(
-            title="Select Endoscopy Image for AI",
-            filetypes=[
-                ("Images", "*.png *.jpg *.jpeg *.bmp *.dcm *.dicom"),
-                ("All Files", "*.*"),
-            ],
-        )
-        if not path:
-            return
-        try:
-            image_array, metadata, err = image_io.load_image(path)
-            if err:
-                self._set_ai_status("Image load failed.", "error")
-                messagebox.showerror("AI Image Load", err)
-                return
-            self.ai_image = image_array.copy()
-            self.ai_mask = None
-            self.ai_overlay = None
-            self.ai_video_path = None
-            self.ai_video_results = []
-            self.ai_file_label.configure(text=path)
-            self._display_ai_preview(self.ai_original_preview, self.ai_image, "ai_original")
-            self.ai_mask_preview.configure(image=None, text="Mask preview")
-            self.ai_overlay_preview.configure(image=None, text="Overlay preview")
-            h, w = self.ai_image.shape[:2]
-            self._set_ai_diagnosis(
-                f"AI image loaded\nSize: {w} x {h} px\nMetadata fields: {len(metadata)}\n\n"
-                "Load a model, then run Analyze Image."
-            )
-            self._set_ai_status("AI image loaded.", "success")
-            self.main_tabs.set("Polyp AI Detection")
-        except Exception as e:
-            self._set_ai_status("Image load failed.", "error")
-            messagebox.showerror("AI Image Load", str(e))
+    # AI-Segmentation START
+    # AI-Segmentation START: cleanup and clear bug fix
+    # AI-Segmentation START: PhotoImage reference fix
+    # AI-Segmentation START: persistent PhotoImage fix
+    # AI-Segmentation START: complete image reference audit
+    def _clear_ai_preview_label(self, label, text, clear_refs=False):
+        target = self._ai_preview_slot(label)
+        if target is not None:
+            self._set_ai_preview(target, None, text)
+        else:
+            # Unknown widget — try CTkLabel path, then canvas fallback.
+            try:
+                label.configure(image=None, text=text)
+                label.image = None
+            except Exception:
+                try:
+                    label.delete("all")
+                except Exception:
+                    pass
+        if clear_refs:
+            self._ai_preview_photos.clear()
+            self.ai_original_photo = None
+            self.ai_overlay_photo = None
+            self.ai_mask_photo = None
+            self.ai_display_photo = None
+            self.ai_original_ctk_image = None
+            self.ai_overlay_ctk_image = None
+            self.ai_mask_ctk_image = None
+            self.ai_original_image_id = None
+            self.ai_overlay_image_id = None
+            self.ai_mask_image_id = None
+            self.ai_original_canvas_item = None
+            self.ai_overlay_canvas_item = None
+            self.ai_mask_canvas_item = None
+    # AI-Segmentation END: complete image reference audit
+    # AI-Segmentation END: persistent PhotoImage fix
+    # AI-Segmentation END: PhotoImage reference fix
+    # AI-Segmentation END: cleanup and clear bug fix
 
-    # Owner: Bahr - Data I/O
-    def on_ai_upload_video(self):
-        path = filedialog.askopenfilename(
-            title="Select Endoscopy Video for AI",
-            filetypes=[
-                ("Videos", "*.mp4 *.avi *.mov *.mkv"),
-                ("All Files", "*.*"),
-            ],
-        )
-        if not path:
-            return
+    # AI-Segmentation START: auto-load and RGB fix
+    def _ensure_ai_model_loaded(self):
+        if self.ai_model is not None:
+            return True
+        self._set_ai_status("Loading AI model...", "busy")
         try:
-            self.ai_video_path = ai_segmentation_engine.load_video_file(path)
-            self.ai_video_results = []
-            self.ai_file_label.configure(text=self.ai_video_path)
-            self._set_ai_diagnosis(
-                "AI video selected\n"
-                f"{self.ai_video_path}\n\n"
-                "Video analysis extracts limited frames only. Adjust frame_step/max_frames if needed."
-            )
-            self._set_ai_status("AI video selected.", "success")
-            self.main_tabs.set("Polyp AI Detection")
-        except Exception as e:
-            self._set_ai_status("Video load failed.", "error")
-            messagebox.showerror("AI Video Load", str(e))
-
-    # Owner: Bahr - AI Segmentation Bonus
-    def on_ai_load_model(self):
-        path = filedialog.askopenfilename(
-            title="Select PyTorch Segmentation Model",
-            filetypes=[
-                ("PyTorch Models", "*.pt *.pth *.torchscript"),
-                ("All Files", "*.*"),
-            ],
-        )
-        if not path:
-            return
-        self._set_ai_status("Loading model...", "busy")
-        try:
-            self.ai_model = ai_segmentation_engine.load_segmentation_model(path, framework="pytorch")
-            self.ai_model_path = path
-            self._set_ai_diagnosis(
-                "Model loaded\n"
-                f"{path}\n\n"
-                "Ready for inference. If this is a checkpoint/state_dict, export a full scripted model."
-            )
-            self._set_ai_status("Model loaded.", "success")
+            self.ai_model = ai_segmentation_engine.load_model(model_path=self.ai_model_path)
+            config = ai_segmentation_engine.load_ai_config()
+            self.ai_model_path = config.get("model_path", self.ai_model_path)
+            self._update_ai_info()
+            self._set_ai_status("AI model loaded.", "success")
+            return True
         except Exception as e:
             self.ai_model = None
-            self._set_ai_status("Model load failed.", "error")
+            self._update_ai_info()
+            self._set_ai_status("AI model error.", "error")
+            messagebox.showerror("AI Model Load", str(e))
+            return False
+
+    # AI-Segmentation START: robust upload/analyze/clear fix
+    def on_ai_upload_image(self):
+        path = filedialog.askopenfilename(
+            title="Select RGB Image for AI",
+            filetypes=[
+                ("Images", "*.png *.jpg *.jpeg *.bmp"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            # Always use Pillow direct load + convert("RGB") — never image_io
+            # which may apply grayscale conversion or alter the array.
+            pil_img = Image.open(path).convert("RGB")
+            rgb_array = np.array(pil_img, dtype=np.uint8).copy()  # owned copy
+
+            # ── Reset all previous AI outputs BEFORE assigning new image ─────────
+            self.ai_mask = None
+            self.ai_overlay = None
+            self.ai_confidence = None
+            self.ai_display_mode = None
+            self.ai_image_was_grayscale = False
+
+            # ── Assign new image ─────────────────────────────────────────────────
+            self.ai_image = rgb_array
+            self.ai_rgb_file_path = path
+            self.ai_input_source = "AI-only RGB upload"
+            self.ai_image_mode = "RGB"
+
+            # ── Refresh all three previews through the single safe helper ────────
+            self._set_ai_preview("original", self.ai_image)
+            self._set_ai_preview("overlay",  None)
+            self._set_ai_preview("mask",     None)
+
+            h, w = self.ai_image.shape[:2]
+            self._update_ai_info()
+            self._set_ai_diagnosis(
+                "RGB image loaded directly for AI inference.\n"
+                f"Size: {w} x {h} px\n\n"
+                "Normal pipeline image/history unchanged."
+            )
+            self._set_ai_status("RGB image loaded for AI.", "success")
+        except Exception as e:
+            self._set_ai_status("AI RGB image load failed.", "error")
+            messagebox.showerror("AI Image Load", str(e))
+    # AI-Segmentation END: robust upload/analyze/clear fix
+    # AI-Segmentation END: auto-load and RGB fix
+
+    def on_ai_load_model(self):
+        self._set_ai_status("Loading Keras AI model...", "busy")
+        try:
+            self.ai_model = ai_segmentation_engine.load_model(model_path=self.ai_model_path)
+            config = ai_segmentation_engine.load_ai_config()
+            self.ai_model_path = config.get("model_path", self.ai_model_path)
+            if hasattr(self, "ai_threshold_var"):
+                self.ai_threshold_var.set(float(config.get("threshold", self.ai_threshold_var.get())))
+                self.ai_threshold_label.configure(text=f"Threshold: {self.ai_threshold_var.get():.2f}")
+            self._update_ai_info()
+            self._set_ai_diagnosis(
+                "AI model loaded\n"
+                f"Model: {self.ai_model_path}\n"
+                f"Input size: {config['img_size']} x {config['img_size']}\n"
+                f"Threshold: {self.ai_threshold_var.get() if hasattr(self, 'ai_threshold_var') else config['threshold']}\n\n"
+                "This model is trained for endoscopy polyp segmentation. Results on non-endoscopy images are only a technical test and are not clinically meaningful."
+            )
+            self._set_ai_status("AI model loaded.", "success")
+        except Exception as e:
+            self.ai_model = None
+            self._update_ai_info()
+            self._set_ai_status("AI model load failed.", "error")
             messagebox.showerror("AI Model Load", str(e))
 
-    # Owner: Bahr - AI Segmentation Bonus
+    def on_ai_use_current_image(self):
+        if not self._require_image():
+            return
+        # AI-Segmentation START: auto-load and RGB fix
+        source_note = "Pipeline"
+        mode_note = "RGB"
+        if self.current_image_array.ndim == 3 and self.current_image_array.shape[2] >= 3:
+            self.ai_image = self.current_image_array[:, :, :3].copy()
+        elif (
+            self.original_image_array is not None
+            and self.original_image_array.ndim == 3
+            and self.original_image_array.shape[2] >= 3
+        ):
+            self.ai_image = self.original_image_array[:, :, :3].copy()
+            source_note = "Original RGB"
+        else:
+            self.ai_image = self.current_image_array.copy()
+            mode_note = "Grayscale converted to RGB"
+        self.ai_input_source = source_note
+        self.ai_image_mode = mode_note
+        # AI-Segmentation END: auto-load and RGB fix
+        self.ai_mask = None
+        self.ai_overlay = None
+        self.ai_confidence = None
+        self.ai_display_mode = None
+        self.ai_video_results = []
+        # AI-Segmentation START: analyze rendering fix
+        self._set_ai_preview("original", self.ai_image, "No AI image loaded")
+        self._set_ai_preview("mask", None, "Mask preview")
+        self._set_ai_preview("overlay", None, "Overlay preview")
+        # AI-Segmentation END: analyze rendering fix
+        h, w = self.ai_image.shape[:2]
+        self._update_ai_info()
+        self._set_ai_diagnosis(
+            "Current image copied to AI workspace\n"
+            f"Size: {w} x {h} px\n\n"
+            "Pipeline image/history unchanged.\n"
+            f"AI input source: {self.ai_input_source}\n"
+            f"AI image mode: {self.ai_image_mode}\n\n"
+            + ("Pipeline grayscale image converted to RGB for model compatibility.\n\n" if self.ai_image_mode != "RGB" else "")
+            +
+            "This model is trained for endoscopy polyp segmentation. Results on non-endoscopy images are only a technical test and are not clinically meaningful."
+        )
+        self._set_ai_status("Current image copied to AI workspace.", "success")
+        self.main_tabs.set("Polyp AI Detection")
+
+    # AI-Segmentation START: UX simplification
+    def on_ai_run_current_image(self):
+        if not self._ensure_ai_model_loaded():
+            return
+        if self.ai_image is None:
+            if not self._require_image():
+                return
+            self.on_ai_use_current_image()
+        self.on_ai_analyze_image()
+    # AI-Segmentation END: UX simplification
+
     def on_ai_analyze_image(self):
         if self.ai_image is None:
-            self._set_ai_status("Upload an AI image first.", "warning")
+            self._set_ai_status("Please upload an AI image first.", "warning")
             return
-        if not self._require_ai_model():
+        if not self._ensure_ai_model_loaded():
             return
-
-        self._set_ai_status("Running inference...", "busy")
+        self._set_ai_status("Running AI segmentation...", "busy")
         try:
-            preprocessed = ai_segmentation_engine.preprocess_for_segmentation(self.ai_image)
-            raw_mask = ai_segmentation_engine.run_segmentation_inference(self.ai_model, preprocessed)
-            self.ai_mask = ai_segmentation_engine.postprocess_segmentation_mask(raw_mask, self.ai_image.shape)
-            self.ai_overlay = ai_segmentation_engine.create_segmentation_overlay(self.ai_image, self.ai_mask)
-            self.ai_video_results = []
-
-            area = int(np.count_nonzero(self.ai_mask))
-            total = int(self.ai_mask.size)
-            pct = (area / total * 100.0) if total else 0.0
-            self._display_ai_preview(self.ai_mask_preview, self.ai_mask, "ai_mask", max_size=(420, 170))
-            self._display_ai_preview(self.ai_overlay_preview, self.ai_overlay, "ai_overlay")
-            self._set_ai_diagnosis(
-                "Segmentation complete\n"
-                f"Positive mask pixels: {area:,}\n"
-                f"Estimated area: {pct:.2f}% of image\n\n"
-                "Use Show Mask, Show Overlay, or Save Result."
+            result = ai_segmentation_engine.run_inference(
+                self.ai_image,
+                model_path=self.ai_model_path,
+                threshold=self.ai_threshold_var.get() if hasattr(self, "ai_threshold_var") else None,
             )
-            self._set_ai_status("Segmentation complete.", "success")
+            self.ai_model = ai_segmentation_engine.load_model(model_path=self.ai_model_path)
+            self.ai_mask = result["mask"]
+            self.ai_overlay = result["overlay"]
+            self.ai_confidence = result["confidence"]
+            self.ai_display_mode = "overlay"
+            # AI-Segmentation START: analyze rendering fix
+            # All three previews go through the single safe helper.
+            # "original" is set first so it is never omitted even when mask/overlay fail.
+            self._set_ai_preview("original", self.ai_image, "No AI image loaded")
+            self._set_ai_preview("mask", self.ai_mask, "Mask preview")
+            self._set_ai_preview("overlay", self.ai_overlay, "Overlay preview")
+            # AI-Segmentation END: analyze rendering fix
+            self._update_ai_info()
+            self._set_ai_completion_diagnosis(result)
+            self._set_ai_status("AI segmentation completed.", "success")
         except Exception as e:
-            self._set_ai_status("Inference failed.", "error")
-            messagebox.showerror("AI Inference", str(e))
+            self._set_ai_status("AI segmentation failed.", "error")
+            messagebox.showerror("AI Segmentation", str(e))
 
-    # Owner: Bahr - AI Segmentation Bonus
-    def on_ai_analyze_video(self):
-        if not self.ai_video_path:
-            self._set_ai_status("Upload an AI video first.", "warning")
-            return
-        if not self._require_ai_model():
-            return
-        frame_step, max_frames = self._parse_ai_video_limits()
-        if frame_step is None:
-            return
-
-        self._set_ai_status("Running video inference...", "busy")
-        self._set_ai_diagnosis("Video segmentation running...\nThe app is processing selected frames only.")
-
-        def progress(done, total, frame_index):
-            self.master.after(
-                0,
-                lambda: self._set_ai_status(
-                    f"Video inference {done}/{total} (frame {frame_index})", "busy"
-                ),
-            )
-
-        def worker():
-            try:
-                results = ai_segmentation_engine.run_video_segmentation(
-                    self.ai_model,
-                    self.ai_video_path,
-                    frame_step=frame_step,
-                    max_frames=max_frames,
-                    progress_callback=progress,
-                )
-                self.master.after(0, lambda: self._finish_ai_video_results(results))
-            except Exception as e:
-                self.master.after(0, lambda err=e: self._fail_ai_video_results(err))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_ai_video_results(self, results):
-        self.ai_video_results = results
-        if results:
-            first = results[0]
-            self.ai_image = first["image"]
-            self.ai_mask = first["mask"]
-            self.ai_overlay = first["overlay"]
-            self._display_ai_preview(self.ai_original_preview, self.ai_image, "ai_video_original")
-            self._display_ai_preview(self.ai_mask_preview, self.ai_mask, "ai_video_mask", max_size=(420, 170))
-            self._display_ai_preview(self.ai_overlay_preview, self.ai_overlay, "ai_video_overlay")
-        self._set_ai_diagnosis(
-            "Video segmentation complete\n"
-            f"Segmented frames: {len(results)}\n"
-            "Preview shows the first processed frame.\n\n"
-            "Use Save Result to export masks and overlays for all processed frames."
-        )
-        self._set_ai_status("Video segmentation complete.", "success")
-
-    def _fail_ai_video_results(self, error):
-        self._set_ai_status("Video inference failed.", "error")
-        messagebox.showerror("AI Video Inference", str(error))
-
-    # Owner: Bahr - AI Segmentation Bonus
     def on_ai_show_mask(self):
         if self.ai_mask is None:
-            self._set_ai_status("No mask available yet.", "warning")
+            self._set_ai_status("No AI mask available yet.", "warning")
             return
-        self._display_ai_preview(self.ai_mask_preview, self.ai_mask, "ai_mask_show", max_size=(420, 170))
-        self._set_ai_status("Mask displayed.", "info")
+        self.ai_display_mode = "mask"
+        # AI-Segmentation START: analyze rendering fix
+        self._set_ai_preview("original", self.ai_image, "No AI image loaded")
+        self._set_ai_preview("mask", self.ai_mask, "Mask preview")
+        self._set_ai_preview("overlay", self.ai_mask, "Overlay preview")
+        # AI-Segmentation END: analyze rendering fix
+        self._set_ai_status("AI mask displayed.", "info")
 
-    # Owner: Bahr - AI Segmentation Bonus
     def on_ai_show_overlay(self):
         if self.ai_overlay is None:
-            self._set_ai_status("No overlay available yet.", "warning")
+            self._set_ai_status("No AI overlay available yet.", "warning")
             return
-        self._display_ai_preview(self.ai_overlay_preview, self.ai_overlay, "ai_overlay_show")
-        self._set_ai_status("Overlay displayed.", "info")
+        self.ai_display_mode = "overlay"
+        # AI-Segmentation START: analyze rendering fix
+        self._set_ai_preview("original", self.ai_image, "No AI image loaded")
+        self._set_ai_preview("overlay", self.ai_overlay, "Overlay preview")
+        # AI-Segmentation END: analyze rendering fix
+        self._set_ai_status("AI overlay displayed.", "info")
 
-    # Owner: Bahr - Data I/O
+    # AI-Segmentation START: UX simplification
+    def on_ai_toggle_view(self):
+        if self.ai_mask is None or self.ai_overlay is None:
+            self._set_ai_status("Run AI segmentation first.", "warning")
+            return
+        if self.ai_display_mode == "mask":
+            self.on_ai_show_overlay()
+        else:
+            self.on_ai_show_mask()
+    # AI-Segmentation END: UX simplification
+
+    def on_ai_back_to_pipeline(self):
+        if not self._require_image():
+            return
+        self.ai_display_mode = None
+        self.refresh_canvas(self.current_image_array)
+        self._set_ai_status("Back to pipeline image.", "info")
+
     def on_ai_save_result(self):
         if self.ai_mask is None or self.ai_overlay is None:
-            self._set_ai_status("No segmentation result to save.", "warning")
+            self._set_ai_status("No AI result available to save.", "warning")
             return
-        output_dir = filedialog.askdirectory(title="Choose Folder for Segmentation Output")
-        if not output_dir:
+
+        save_mask = self.ai_display_mode == "mask"
+        default_name = "polyp_segmentation_mask.png" if save_mask else "polyp_segmentation_overlay.png"
+        path = filedialog.asksaveasfilename(
+            title="Save AI Result",
+            defaultextension=".png",
+            initialfile=default_name,
+            filetypes=[("PNG", "*.png"), ("All Files", "*.*")],
+        )
+        if not path:
             return
+
         try:
-            if self.ai_video_results:
-                saved = ai_segmentation_engine.save_video_segmentation_outputs(
-                    self.ai_video_results, output_dir
-                )
-                self._set_ai_diagnosis(
-                    "Video outputs saved\n"
-                    f"Frames saved: {len(saved)}\n"
-                    f"Output folder: {output_dir}"
-                )
-            else:
-                saved = ai_segmentation_engine.save_segmentation_output(
-                    self.ai_mask, self.ai_overlay, output_dir
-                )
-                self._set_ai_diagnosis(
-                    "Image outputs saved\n"
-                    f"Mask: {saved['mask']}\n"
-                    f"Overlay: {saved['overlay']}"
-                )
-            self._set_ai_status("Segmentation output saved.", "success")
-            messagebox.showinfo("AI Output Saved", f"Saved segmentation outputs to:\n{output_dir}")
+            array = self.ai_mask if save_mask else self.ai_overlay
+            Image.fromarray(np.asarray(array).astype(np.uint8)).save(path)
+            self._set_ai_status("AI result saved.", "success")
+            messagebox.showinfo("AI Result Saved", f"Saved AI result to:\n{path}")
         except Exception as e:
             self._set_ai_status("Save failed.", "error")
             messagebox.showerror("AI Save Result", str(e))
+
+    # AI-Segmentation START: robust upload/analyze/clear fix
+    def on_ai_clear_workspace(self):
+        """Reset all AI state and visuals without touching the pipeline."""
+        # ── State reset ──────────────────────────────────────────────────────────
+        self.ai_image = None
+        self.ai_mask = None
+        self.ai_overlay = None
+        self.ai_confidence = None
+        self.ai_display_mode = None
+        self.ai_input_source = None
+        self.ai_image_mode = None
+        self.ai_rgb_file_path = None
+        self.ai_image_was_grayscale = False
+        self.ai_video_results = []
+
+        # ── Visual reset — _set_ai_preview calls canvas.delete("all") first, ────
+        # which removes the Tk image reference before Python refs are released.
+        self._set_ai_preview("original", None)
+        self._set_ai_preview("overlay",  None)
+        self._set_ai_preview("mask",     None)
+
+        # ── Drop all remaining Python photo references ────────────────────────
+        # (_set_ai_preview already called _clear_ai_preview_reference for each
+        # target, but we also wipe the shared dict and display anchor.)
+        self._ai_preview_photos.clear()
+        self.ai_display_photo   = None
+        self.ai_original_photo  = None
+        self.ai_overlay_photo   = None
+        self.ai_mask_photo      = None
+
+        self._update_ai_info()
+        self._set_ai_diagnosis(
+            "AI workspace cleared.\n"
+            "Pipeline image/history unchanged.\n\n"
+            "This model is trained for endoscopy polyp segmentation. "
+            "Results on non-endoscopy images are only a technical test "
+            "and are not clinically meaningful."
+        )
+        self._set_ai_status("AI workspace cleared.", "info")
+    # AI-Segmentation END: robust upload/analyze/clear fix
+
+    def on_ai_apply_overlay_to_pipeline(self):
+        if self.ai_overlay is None:
+            self._set_ai_status("No AI overlay available to apply.", "warning")
+            return
+        if self._commit_result(self.ai_overlay.copy()):
+            self.ai_display_mode = None
+            self._set_ai_status("AI overlay applied to pipeline.", "success")
+    # AI-Segmentation END
 
     def on_load_image(self):
         path = filedialog.askopenfilename(

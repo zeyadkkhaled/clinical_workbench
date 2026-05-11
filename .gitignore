@@ -1,2 +1,22 @@
 __pycache__/
 *.pyc
+# Python virtual environments
+.venv/
+.venv311/
+venv/
+env/
+
+# AI models
+ai_models/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# TensorFlow / checkpoints
+*.h5
+*.keras
+*.ckpt
+
+# VSCode
+.vscode/
