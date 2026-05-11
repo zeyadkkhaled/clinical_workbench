@@ -5,15 +5,118 @@ Purpose: Frequency domain operations, noise modeling, and ROI statistics.
 
 import numpy as np
 
-def generate_notch_filter(shape, center, radius):
-    """Generates a notch filter mask."""
-    # TODO (Zeyad): Implement Notch filter generation and inverse FFT
-    return None
+# Author: Zeyad Khaled - Phase 2 (Notch filter generation)
+def generate_notch_filter(shape, centers, radius, filter_type="ideal", order=2):
+    """
+    Generate a symmetric Notch Reject filter mask (pure NumPy).
 
-def apply_notch_filter(image_array, filter_mask):
-    """Applies a notch filter to the image in the frequency domain."""
-    # TODO (Zeyad): Implement Notch filter application and inverse FFT
-    return None
+    For every user-clicked frequency coordinate (u, v), a conjugate notch is
+    automatically placed at (rows - u, cols - v) to ensure the filtered image
+    remains real-valued after the inverse FFT.
+
+    Args:
+        shape:       (rows, cols) — dimensions of the frequency-domain image.
+        centers:     list of (u, v) tuples in *shifted* frequency coordinates
+                     (i.e. (0, 0) is the DC center after fftshift).
+        radius:      notch radius D0 in pixels.
+        filter_type: "ideal", "butterworth", or "gaussian" (case-insensitive).
+        order:       Butterworth filter order (only used when filter_type is
+                     "butterworth").
+
+    Returns:
+        numpy.ndarray (float64, shape=shape) — multiplicative notch reject mask
+        with values in [0, 1].  1 = pass, 0 = reject.
+
+    Raises:
+        ValueError: on invalid inputs.
+    """
+    if shape is None or len(shape) != 2 or shape[0] <= 0 or shape[1] <= 0:
+        raise ValueError("Shape must be a 2-tuple of positive integers.")
+    if centers is None or len(centers) == 0:
+        raise ValueError("At least one notch center (u, v) is required.")
+    if radius <= 0:
+        raise ValueError("Notch radius must be positive.")
+
+    rows, cols = int(shape[0]), int(shape[1])
+    kind = str(filter_type).strip().lower()
+    if kind not in ("ideal", "butterworth", "gaussian"):
+        raise ValueError("filter_type must be 'ideal', 'butterworth', or 'gaussian'.")
+
+    # Coordinate grids centred on DC (after fftshift)
+    u_grid = np.arange(rows).reshape(-1, 1) - rows // 2
+    v_grid = np.arange(cols).reshape(1, -1) - cols // 2
+
+    mask = np.ones((rows, cols), dtype=np.float64)
+
+    for (cu, cv) in centers:
+        # Pair: original notch + conjugate mirror
+        pairs = [
+            (float(cu), float(cv)),
+            (float(-cu), float(-cv)),
+        ]
+        for pu, pv in pairs:
+            d = np.sqrt((u_grid - pu) ** 2 + (v_grid - pv) ** 2)
+
+            if kind == "ideal":
+                notch = np.where(d <= radius, 0.0, 1.0)
+
+            elif kind == "butterworth":
+                # Avoid division by zero inside the notch centre
+                safe_d = np.maximum(d, 1e-12)
+                notch = 1.0 / (1.0 + (radius / safe_d) ** (2 * int(order)))
+
+            elif kind == "gaussian":
+                notch = 1.0 - np.exp(-(d ** 2) / (2.0 * radius ** 2))
+
+            mask *= notch
+
+    return mask
+
+
+# Author: Zeyad Khaled - Phase 2 (Notch filter application via FFT)
+def apply_notch_filter(image_array, notch_mask):
+    """
+    Apply a pre-computed notch filter mask in the frequency domain.
+
+    Pipeline: fft2 → fftshift → element-wise multiply → ifftshift → ifft2 → real.
+
+    Args:
+        image_array: HxW grayscale or HxWxC colour image (uint8 or float).
+        notch_mask:  2-D float array of the same spatial dimensions as the
+                     grayscale version of the image (values in [0, 1]).
+
+    Returns:
+        numpy.ndarray (uint8) — the spatially filtered image.
+
+    Raises:
+        ValueError: on shape mismatch or invalid inputs.
+    """
+    if not _is_valid_image_array(image_array):
+        raise ValueError("Invalid image array.")
+    if notch_mask is None or not isinstance(notch_mask, np.ndarray) or notch_mask.ndim != 2:
+        raise ValueError("notch_mask must be a 2-D NumPy array.")
+
+    array = _to_uint8(image_array)
+    is_colour = array.ndim == 3
+
+    def _filter_channel(channel):
+        if channel.shape != notch_mask.shape:
+            raise ValueError(
+                f"Notch mask shape {notch_mask.shape} does not match "
+                f"channel shape {channel.shape}."
+            )
+        f_transform = np.fft.fft2(channel.astype(np.float64))
+        f_shifted   = np.fft.fftshift(f_transform)
+        f_filtered  = f_shifted * notch_mask
+        f_ishifted  = np.fft.ifftshift(f_filtered)
+        spatial     = np.real(np.fft.ifft2(f_ishifted))
+        return np.clip(spatial, 0, 255).astype(np.uint8)
+
+    if is_colour:
+        channels = [_filter_channel(array[:, :, c]) for c in range(array.shape[2])]
+        return np.stack(channels, axis=-1)
+    else:
+        return _filter_channel(array)
 
 # Bahr-Phase2
 def _is_valid_image_array(image_array):
