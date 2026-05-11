@@ -7,7 +7,7 @@ APPEARANCE_MODE = "dark"
 
 UI_PADDING    = 10
 CORNER_RADIUS = 8
-SIDEBAR_WIDTH = 290
+SIDEBAR_WIDTH = 350
 
 # Safety limits
 MAX_PROCESSING_PIXELS = 40_000_000   # 40 MP — blocks catastrophically large zoom outputs
@@ -56,10 +56,10 @@ CLR_ST_ERROR   = "#2a0f0f"
 CLR_ST_BUSY    = "#0f1f3a"
 
 # ── Typography ─────────────────────────────────────────────────────────────────
-FONT_APP_TITLE   = ("Segoe UI", 13, "bold")
-FONT_SECTION_HDG = ("Segoe UI", 11, "bold")
-FONT_LABEL       = ("Segoe UI", 10)
-FONT_LABEL_BOLD  = ("Segoe UI", 10, "bold")
-FONT_BUTTON      = ("Segoe UI", 10, "bold")
-FONT_MONO        = ("Consolas", 9)
-FONT_STATUS      = ("Segoe UI", 10)
+FONT_APP_TITLE   = ("Segoe UI", 17, "bold")
+FONT_SECTION_HDG = ("Segoe UI", 14, "bold")
+FONT_LABEL       = ("Segoe UI", 13)
+FONT_LABEL_BOLD  = ("Segoe UI", 13, "bold")
+FONT_BUTTON      = ("Segoe UI", 13, "bold")
+FONT_MONO        = ("Consolas", 12)
+FONT_STATUS      = ("Segoe UI", 13)
