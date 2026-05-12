@@ -1,2 +1,24 @@
 __pycache__/
 *.pyc
+# Virtual environments
+.venv/
+.venv311/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# AI models
+ai_models/
+*.keras
+*.h5
+*.ckpt
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

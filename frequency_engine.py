@@ -169,13 +169,13 @@ def inject_noise(image_array, noise_type, parameters=None):
             std = float(parameters.get("std", 10.0))
             if std < 0:
                 raise ValueError("Gaussian std must be non-negative.")
-            noise = np.random.normal(mean, std, image.shape)
+            noise = np.random.normal(mean, std, image.shape)#I_noisy(x,y) = I(x,y) + N(mean, std²)
         elif kind == "uniform":
             low = float(parameters.get("low", -10.0))
             high = float(parameters.get("high", 10.0))
             if high < low:
                 raise ValueError("Uniform high must be greater than or equal to low.")
-            noise = np.random.uniform(low, high, image.shape)
+            noise = np.random.uniform(low, high, image.shape)#I_noisy(x,y) = I(x,y) + U(low, high)
         else:
             raise ValueError("Unsupported noise type. Use Gaussian or Uniform.")
     except (TypeError, ValueError) as exc:
@@ -230,11 +230,15 @@ def calculate_roi_statistics(image_array, roi):
         gray = roi_pixels
 
     flat = gray.ravel()
-    histogram = np.bincount(flat, minlength=256).astype(np.int64)
+    # Compute local histogram from scratch using explicit iteration over intensities.
+    # Each intensity value i (0-255) is counted by summing the boolean equality mask.
+    histogram = np.zeros(256, dtype=np.int64)
+    for pixel in flat:
+     histogram[int(pixel)] += 1
 
     return {
         "mean": float(np.mean(flat)),
-        "variance": float(np.var(flat)),
+        "variance": float(np.var(flat)),#Σ(x - mean)² / N
         "std": float(np.std(flat)),
         "min": int(np.min(flat)),
         "max": int(np.max(flat)),
@@ -277,10 +281,41 @@ def _window_sum(image, window_h, window_w):
 # Youssra-Phase2 START: Fourier template matching
 def template_matching_fourier(image_array, template_array):
     """
-    Locate a cropped template inside an image using Fourier-domain cross-correlation.
+    Locate a template inside an image using Fourier-domain cross-correlation.
 
-    Returns a dictionary with top-left/bottom-right coordinates, peak score, and
-    the valid response map. Coordinates are clamped inside the source image.
+    Algorithm (pure NumPy FFT — no OpenCV, scipy, or skimage):
+      1. Convert both images to grayscale float64.
+      2. Zero-mean both:
+             image_gray    = image    - image.mean()
+             template_gray = template - template.mean()
+         Subtracting the mean removes DC bias so correlation is driven by
+         local texture rather than overall brightness.
+      3. Pad template_gray to full image dimensions (zero outside template area).
+      4. Compute Fourier-domain cross-correlation:
+             F_image    = fft2(image_gray)
+             F_template = fft2(padded_template)
+             correlation = real( ifft2( F_image * conj(F_template) ) )
+         Element-wise multiply in frequency domain = convolution in spatial domain.
+         Conjugating F_template turns convolution into cross-correlation.
+      5. Restrict to the valid (non-wrap-around) region:
+             valid_response = correlation[:H - h + 1, :W - w + 1]
+         Positions outside this region have the template partially outside the image
+         and would produce wrap-around artefacts from the circular FFT.
+      6. Peak of valid_response → top-left corner of the best match.
+
+    Args:
+        image_array:    Full medical image (HxW grayscale or HxWxC colour).
+        template_array: Cropped template image (hxw grayscale or hxwxC colour).
+
+    Returns:
+        dict with keys:
+            top_left     — (x, y) pixel coordinates of the match's top-left corner.
+            bottom_right — (x, y) pixel coordinates of the match's bottom-right corner.
+            score        — raw cross-correlation peak value.
+            response     — 2-D valid response map (shape: [H-h+1, W-w+1]).
+
+    Raises:
+        ValueError: on empty/invalid inputs or if template is larger than the image.
     """
     image = _to_grayscale_float(image_array)
     template = _to_grayscale_float(template_array)
@@ -293,46 +328,41 @@ def template_matching_fourier(image_array, template_array):
     if template_h > image_h or template_w > image_w:
         raise ValueError("Template must not be larger than the image.")
 
-    template_zero_mean = template - np.mean(template)
-    if not np.any(template_zero_mean):
+    # Step 2: zero-mean both signals so DC offset does not dominate the correlation
+    image_gray    = image    - image.mean()
+    template_gray = template - template.mean()
+
+    if not np.any(template_gray):
         raise ValueError("Template has no intensity variation.")
 
-    padded_template = np.zeros_like(image, dtype=np.float64)
-    padded_template[:template_h, :template_w] = template_zero_mean
+    # Step 3: pad template to image size (zero-fill beyond template boundary)
+    padded_template = np.zeros((image_h, image_w), dtype=np.float64)
+    padded_template[:template_h, :template_w] = template_gray
 
-    f_image = np.fft.fft2(image)
-    f_template = np.fft.fft2(padded_template)
-    numerator = np.real(np.fft.ifft2(f_image * np.conj(f_template)))
+    # Step 4: Fourier-domain cross-correlation
+    # corr[i, j] = Σ_m Σ_n  image_gray[i+m, j+n] · template_gray[m, n]
+    F_image    = np.fft.fft2(image_gray)
+    F_template = np.fft.fft2(padded_template)
+    correlation = np.fft.ifft2(F_image * np.conj(F_template))
+    response = np.real(correlation)
 
+    # Step 5: valid region — discard wrap-around positions
     valid_h = image_h - template_h + 1
     valid_w = image_w - template_w + 1
-    valid_numerator = numerator[:valid_h, :valid_w]
+    valid_response = response[:valid_h, :valid_w]
 
-    window_area = float(template_h * template_w)
-    window_sum = _window_sum(image, template_h, template_w)
-    window_sumsq = _window_sum(image * image, template_h, template_w)
-    window_variance_sum = np.maximum(window_sumsq - (window_sum * window_sum / window_area), 0.0)
-    template_energy = np.sum(template_zero_mean * template_zero_mean)
-    denominator = np.sqrt(window_variance_sum * template_energy)
-
-    valid_response = np.zeros_like(valid_numerator, dtype=np.float64)
-    np.divide(
-        valid_numerator,
-        denominator,
-        out=valid_response,
-        where=denominator > 1e-12,
-    )
+    # Step 6: locate the peak (best match position)
     peak_y, peak_x = np.unravel_index(np.argmax(valid_response), valid_response.shape)
 
-    x1 = int(np.clip(peak_x, 0, image_w - 1))
-    y1 = int(np.clip(peak_y, 0, image_h - 1))
-    x2 = int(np.clip(x1 + template_w, 0, image_w))
-    y2 = int(np.clip(y1 + template_h, 0, image_h))
+    x1 = int(np.clip(peak_x,           0, image_w - 1))
+    y1 = int(np.clip(peak_y,           0, image_h - 1))
+    x2 = int(np.clip(x1 + template_w,  0, image_w))
+    y2 = int(np.clip(y1 + template_h,  0, image_h))
 
     return {
-        "top_left": (x1, y1),
+        "top_left":     (x1, y1),
         "bottom_right": (x2, y2),
-        "score": float(valid_response[peak_y, peak_x]),
-        "response": valid_response,
+        "score":        float(valid_response[peak_y, peak_x]),
+        "response":     valid_response,
     }
 # Youssra-Phase2 END: Fourier template matching
