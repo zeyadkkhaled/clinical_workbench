@@ -279,14 +279,202 @@ def create_segmentation_overlay(image_array, mask_array, alpha=0.4):
     return create_overlay(image_array, mask_array, color=(0, 255, 0), alpha=alpha)
 
 
+# Bahr-AI-Video START
+def get_video_metadata(video_path):
+    """
+    Read basic metadata from a video file using OpenCV.
+
+    Returns a dict with: filename, frame_count, fps, width, height.
+    Returns partial info (plus an 'error' key) on failure rather than raising.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return {"filename": os.path.basename(str(video_path)), "error": "OpenCV not installed"}
+
+    meta = {"filename": os.path.basename(str(video_path))}
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if cap.isOpened():
+            meta["frame_count"] = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            meta["fps"]         = float(cap.get(cv2.CAP_PROP_FPS))
+            meta["width"]       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            meta["height"]      = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+        else:
+            meta["error"] = "Could not open video"
+    except Exception as exc:
+        meta["error"] = str(exc)
+    return meta
+
+
+def segment_video_frames(
+    video_path,
+    model_path=None,
+    config_path="ai_models/config.json",
+    frame_step=5,
+    max_frames=200,
+    threshold=0.5,
+    progress_callback=None,
+):
+    """
+    Process a video file frame-by-frame using the Keras polyp segmentation model.
+
+    The model is loaded once and cached (via _MODEL_CACHE) before the loop starts —
+    it is never reloaded per frame.  Every frame_step-th frame is selected for
+    inference; frames in between are skipped to keep memory usage bounded.
+
+    Args:
+        video_path:         Path to the input video (.mp4 / .avi / .mov / .mkv).
+        model_path:         Optional override for the Keras model path.
+        config_path:        Path to the AI JSON config.
+        frame_step:         Process every N-th frame (1 = every frame, 5 = every 5th).
+        max_frames:         Hard cap on how many frames to process (avoids OOM).
+        threshold:          Segmentation probability threshold passed to run_inference.
+        progress_callback:  Optional callable(current_count, estimated_total).
+
+    Returns:
+        List of dicts, one per processed frame:
+            {
+                "frame_index": int,          # absolute frame number in the source video
+                "original":    np.uint8 RGB, # raw video frame converted BGR→RGB
+                "mask":        np.uint8,     # binary segmentation mask
+                "overlay":     np.uint8 RGB, # green overlay blended onto the frame
+                "confidence":  float,        # mean predicted probability inside the mask
+            }
+
+    Raises:
+        ValueError:           if the video cannot be opened or parameters are invalid.
+        AISegmentationError:  if the Keras model fails to load.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise AISegmentationError(
+            "OpenCV (cv2) is required for video segmentation.\n"
+            "Install it with:  pip install opencv-python"
+        ) from exc
+
+    if frame_step <= 0:
+        raise ValueError("frame_step must be a positive integer.")
+    if max_frames <= 0:
+        raise ValueError("max_frames must be a positive integer.")
+
+    # Pre-load the model once so run_inference can pull it from the cache every frame
+    load_model(model_path=model_path, config_path=config_path)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
+
+    total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    estimated_total = min(
+        max_frames,
+        max(1, (total_video_frames + frame_step - 1) // frame_step),
+    )
+
+    results    = []
+    frame_idx  = 0
+    processed  = 0
+
+    try:
+        while processed < max_frames:
+            ret, bgr_frame = cap.read()
+            if not ret:
+                break  # end of video or read error
+
+            if frame_idx % frame_step == 0:
+                # OpenCV produces BGR — convert to RGB before passing to the model
+                rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+
+                result = run_inference(
+                    rgb_frame,
+                    model_path=model_path,
+                    config_path=config_path,
+                    threshold=threshold,
+                )
+
+                results.append({
+                    "frame_index": frame_idx,
+                    "original":    rgb_frame,
+                    "mask":        result["mask"],
+                    "overlay":     result["overlay"],
+                    "confidence":  result["confidence"],
+                })
+                processed += 1
+
+                if progress_callback is not None:
+                    try:
+                        progress_callback(processed, estimated_total)
+                    except Exception:
+                        pass  # never let a bad callback crash the loop
+
+            frame_idx += 1
+    finally:
+        cap.release()
+
+    return results
+
+
+def save_video_result(results, output_path, fps=None, original_fps=None):
+    """
+    Write processed overlay frames to an MP4 or AVI video file.
+
+    Args:
+        results:      List of frame dicts returned by segment_video_frames.
+        output_path:  Destination file path (.mp4 or .avi).
+        fps:          Output FPS.  Falls back to original_fps, then to 10.
+        original_fps: FPS from the source video (used when fps is None).
+
+    Raises:
+        AISegmentationError: if results are empty or the VideoWriter cannot be created.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise AISegmentationError(
+            "OpenCV (cv2) is required to save video output.\n"
+            "Install it with:  pip install opencv-python"
+        ) from exc
+
+    if not results:
+        raise AISegmentationError("No processed frames available to save.")
+
+    out_fps = float(fps) if fps is not None else (float(original_fps) if original_fps else 10.0)
+    if out_fps <= 0:
+        out_fps = 10.0
+
+    first_overlay = np.asarray(results[0]["overlay"])
+    h, w = first_overlay.shape[:2]
+
+    ext = str(output_path).lower().rsplit(".", 1)[-1]
+    fourcc = cv2.VideoWriter_fourcc(*"XVID") if ext == "avi" else cv2.VideoWriter_fourcc(*"mp4v")
+
+    writer = cv2.VideoWriter(str(output_path), fourcc, out_fps, (w, h))
+    if not writer.isOpened():
+        raise AISegmentationError(f"Could not create video writer for: {output_path}")
+
+    try:
+        for frame_dict in results:
+            overlay_rgb = np.asarray(frame_dict["overlay"]).astype(np.uint8)
+            if overlay_rgb.ndim == 2:
+                overlay_rgb = np.stack([overlay_rgb, overlay_rgb, overlay_rgb], axis=-1)
+            # cv2.VideoWriter expects BGR
+            writer.write(cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
+
+
+# Legacy compatibility stubs (kept so nothing that imported them breaks)
 def load_video_file(video_path):
-    raise AISegmentationError("Video segmentation is not part of the Keras desktop integration.")
+    return get_video_metadata(video_path)
 
 
-def run_video_segmentation(*args, **kwargs):
-    raise AISegmentationError("Video segmentation is not part of the Keras desktop integration.")
+def run_video_segmentation(video_path, **kwargs):
+    return segment_video_frames(video_path, **kwargs)
 
 
-def save_video_segmentation_outputs(*args, **kwargs):
-    raise AISegmentationError("Video segmentation is not part of the Keras desktop integration.")
+def save_video_segmentation_outputs(results, output_path, **kwargs):
+    return save_video_result(results, output_path, **kwargs)
+# Bahr-AI-Video END
 # AI-Segmentation END

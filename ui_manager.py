@@ -58,11 +58,10 @@ class UIManager:
         # Bahr-Phase2: ROI selection state variables
         self.selected_roi         = None
         self.last_roi_histogram   = None
-        # Youssra-Phase2
-        self.selection_mode        = "roi"
-        self.selected_template_roi = None
-        self.selected_template     = None
-        self.last_template_match   = None
+        # Youssra-Phase2: Frequency Template Matching (uses separate uploaded images)
+        self.youssra_original_image = None
+        self.youssra_template_image = None
+        self.youssra_match_result   = None
 
         # Owner: Bahr - AI Segmentation Bonus
         # AI state is intentionally separate from current_image_array/image_history.
@@ -84,6 +83,10 @@ class UIManager:
         # AI-Segmentation END: robust upload/analyze/clear fix
         self.ai_video_path        = None
         self.ai_video_results     = []
+        # Bahr-AI-Video
+        self.ai_video_current_index = 0
+        self.ai_video_is_playing    = False
+        self.ai_video_after_id      = None
 
         # Author: Zeyad Khaled - Phase 2: Notch filtering / magnitude spectrum state
         self._notch_centers       = []          # list of (u, v) in shifted-freq coords
@@ -99,10 +102,9 @@ class UIManager:
         # Bahr-Phase2: ROI drawing state and display mapping state
         self._roi_rect_id           = None
         self._roi_drag_start        = None
-        # Youssra-Phase2
-        self._template_rect_id      = None
-        self._template_drag_start   = None
-        self._match_box_id          = None
+        # Youssra-Phase2: GC anchors for preview canvas PhotoImages
+        self.youssra_original_photo = None
+        self.youssra_template_photo = None
         self._display_image_origin  = (0, 0)
         self._display_image_size    = (0, 0)
         self._display_to_array_scale = (1.0, 1.0)
@@ -380,8 +382,54 @@ class UIManager:
         self._op_btn(controls, "Save AI Result", self.on_ai_save_result, fg=CLR_WARNING, hover=CLR_WARNING_HVR)
         self._ai_help_text(controls, "Saves the displayed AI mask or overlay.")
         self._op_btn(controls, "Clear AI Workspace", self.on_ai_clear_workspace, fg=CLR_DANGER, hover=CLR_DANGER_HVR)
-        self._ai_help_text(controls, "Clears AI-only image, mask, overlay, and confidence.")
+        self._ai_help_text(controls, "Clears AI-only image, mask, overlay, confidence, and any loaded video.")
         # AI-Segmentation END: UX simplification
+
+        # Bahr-AI-Video START: Video segmentation controls
+        ctk.CTkLabel(
+            controls,
+            text="Video Segmentation",
+            font=FONT_SECTION_HDG,
+            text_color=CLR_AI_ACCENT,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(10, 4))
+
+        self._op_btn(controls, "Upload AI Video", self.on_ai_upload_video, fg=CLR_CYAN, hover=CLR_CYAN_HOVER)
+        self._ai_help_text(controls, "Load .mp4 / .avi / .mov / .mkv for frame-by-frame AI segmentation.")
+
+        self._muted_label(controls, "Frame Step (process every N-th frame)")
+        self.ai_video_frame_step_entry = self._styled_entry(controls, placeholder="e.g. 5", default="5")
+
+        self._muted_label(controls, "Max Frames to Process")
+        self.ai_video_max_frames_entry = self._styled_entry(controls, placeholder="e.g. 50", default="50")
+
+        self._op_btn(controls, "Analyze Video", self.on_ai_analyze_video)
+        self._ai_help_text(controls, "Run polyp segmentation on selected frames. Processing may take a moment.")
+
+        playback_row = ctk.CTkFrame(controls, fg_color="transparent")
+        playback_row.pack(fill="x", padx=8, pady=(2, 2))
+        self.btn_ai_video_prev = ctk.CTkButton(
+            playback_row, text="◀ Prev", command=self.on_ai_video_prev_frame,
+            font=FONT_BUTTON, fg_color=CLR_BG_CARD_HDR, hover_color=CLR_BORDER,
+            corner_radius=6, height=30,
+        )
+        self.btn_ai_video_prev.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        self.btn_ai_video_play = ctk.CTkButton(
+            playback_row, text="▶ Play", command=self.on_ai_video_play_pause,
+            font=FONT_BUTTON, fg_color=CLR_SUCCESS, hover_color=CLR_SUCCESS_HVR,
+            corner_radius=6, height=30,
+        )
+        self.btn_ai_video_play.pack(side="left", fill="x", expand=True, padx=2)
+        self.btn_ai_video_next = ctk.CTkButton(
+            playback_row, text="Next ▶", command=self.on_ai_video_next_frame,
+            font=FONT_BUTTON, fg_color=CLR_BG_CARD_HDR, hover_color=CLR_BORDER,
+            corner_radius=6, height=30,
+        )
+        self.btn_ai_video_next.pack(side="left", fill="x", expand=True, padx=(2, 0))
+
+        self._op_btn(controls, "Save Video Result", self.on_ai_save_video_result, fg=CLR_WARNING, hover=CLR_WARNING_HVR)
+        self._ai_help_text(controls, "Save current frame as PNG or all overlay frames as MP4 video.")
+        # Bahr-AI-Video END: Video segmentation controls
 
         # AI-Segmentation START: analyze rendering fix
         # Each preview panel is stored as a named instance attribute so layout can be
@@ -562,7 +610,7 @@ class UIManager:
         self._draw_roi_histogram(None)
         # Bahr-Phase2 END: ROI histogram display
 
-        # Youssra-Phase2 START: template matching UI
+        # Youssra-Phase2 START: template matching result panel
         template_card = ctk.CTkFrame(self.right_panel, fg_color=CLR_BG_CARD, corner_radius=8)
         template_card.pack(fill="x", padx=8, pady=(6, 4))
         ctk.CTkLabel(
@@ -572,16 +620,16 @@ class UIManager:
             text_color=CLR_TEXT_HDG,
             anchor="w",
         ).pack(fill="x", padx=10, pady=(8, 0))
-        self.template_match_label = ctk.CTkLabel(
+        self.youssra_status_label = ctk.CTkLabel(
             template_card,
-            text="Mode: ROI statistics",
+            text="Upload original & template\nthen run matching.",
             font=FONT_MONO,
             text_color=CLR_TEXT_SEC,
             anchor="w",
             justify="left",
         )
-        self.template_match_label.pack(fill="x", padx=10, pady=8)
-        # Youssra-Phase2 END: template matching UI
+        self.youssra_status_label.pack(fill="x", padx=10, pady=8)
+        # Youssra-Phase2 END: template matching result panel
 
         pipeline_card = ctk.CTkFrame(self.right_panel, fg_color=CLR_BG_CARD, corner_radius=8)
         pipeline_card.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
@@ -733,9 +781,6 @@ class UIManager:
             return
         if self.current_image_array is None:
             return
-        if self.selection_mode == "template":
-            self._on_template_start(event)
-            return
         x, y = self._canvas_to_image_xy(event)
         self._roi_drag_start = (x, y)
         self.selected_roi = None
@@ -752,11 +797,6 @@ class UIManager:
     def _on_roi_drag(self, event):
         """Update the visible ROI rectangle while dragging."""
         if self.current_image_array is None or self._roi_drag_start is None:
-            if self.selection_mode == "template" and self._template_drag_start is not None:
-                self._on_template_drag(event)
-            return
-        if self.selection_mode == "template":
-            self._on_template_drag(event)
             return
         x1, y1 = self._roi_drag_start
         x2, y2 = self._canvas_to_image_xy(event)
@@ -773,11 +813,6 @@ class UIManager:
     def _on_roi_end(self, event):
         """Finish ROI selection and store clamped image coordinates."""
         if self.current_image_array is None or self._roi_drag_start is None:
-            if self.selection_mode == "template" and self._template_drag_start is not None:
-                self._on_template_end(event)
-            return
-        if self.selection_mode == "template":
-            self._on_template_end(event)
             return
         x1, y1 = self._roi_drag_start
         x2, y2 = self._canvas_to_image_xy(event)
@@ -800,60 +835,6 @@ class UIManager:
         )
         self._set_status("ROI selected.", "info")
 
-    # Youssra-Phase2 START: template matching UI
-    def _on_template_start(self, event):
-        """Begin drawing a template selection rectangle without touching Bahr ROI state."""
-        x, y = self._canvas_to_image_xy(event)
-        self._template_drag_start = (x, y)
-        self.selected_template_roi = None
-        if self._template_rect_id is not None:
-            self.canvas.delete(self._template_rect_id)
-        cx, cy = self._image_to_canvas_xy(x, y)
-        self._template_rect_id = self.canvas.create_rectangle(
-            cx, cy, cx, cy, outline=CLR_SUCCESS, width=2,
-        )
-        self.template_match_label.configure(text="Template mode:\ndrag a template box")
-
-    def _on_template_drag(self, event):
-        """Update the template selection rectangle."""
-        if self._template_drag_start is None:
-            return
-        x1, y1 = self._template_drag_start
-        x2, y2 = self._canvas_to_image_xy(event)
-        cx1, cy1 = self._image_to_canvas_xy(x1, y1)
-        cx2, cy2 = self._image_to_canvas_xy(x2, y2)
-        if self._template_rect_id is None:
-            self._template_rect_id = self.canvas.create_rectangle(
-                cx1, cy1, cx2, cy2, outline=CLR_SUCCESS, width=2,
-            )
-        else:
-            self.canvas.coords(self._template_rect_id, cx1, cy1, cx2, cy2)
-
-    def _on_template_end(self, event):
-        """Store the selected template rectangle in image coordinates."""
-        if self._template_drag_start is None:
-            return
-        x1, y1 = self._template_drag_start
-        x2, y2 = self._canvas_to_image_xy(event)
-        self._template_drag_start = None
-
-        left, right = sorted((x1, x2))
-        top, bottom = sorted((y1, y2))
-        if right <= left or bottom <= top:
-            self.selected_template_roi = None
-            self._set_status("Please select a valid template region.", "warning")
-            return
-
-        self.selected_template_roi = (left, top, right, bottom)
-        if self._template_rect_id is not None:
-            cx1, cy1 = self._image_to_canvas_xy(left, top)
-            cx2, cy2 = self._image_to_canvas_xy(right, bottom)
-            self.canvas.coords(self._template_rect_id, cx1, cy1, cx2, cy2)
-        self.template_match_label.configure(
-            text=f"Template selected:\nx1={left}, y1={top}\nx2={right}, y2={bottom}"
-        )
-        self._set_status("Template region selected. Click Save Selected Template.", "info")
-    # Youssra-Phase2 END: template matching UI
 
     def _on_pan_start(self, event):
         """Begin click-drag panning."""
@@ -1051,19 +1032,57 @@ class UIManager:
             c, "Clear ROI", self.clear_roi, fg=CLR_WARNING, hover=CLR_WARNING_HVR,
         )
 
-        # Youssra-Phase2 START: template matching UI
-        c = self._make_card("Template Matching")
-        self.btn_template_mode = self._op_btn(
-            c, "Select Template Mode", self.enter_template_selection_mode,
-            fg=CLR_CYAN, hover=CLR_CYAN_HOVER,
+        # Youssra-Phase2 START: Frequency Template Matching UI
+        c = self._make_card("Frequency Template Matching", expanded=True)
+
+        # Two side-by-side preview panels — Original + Template
+        preview_row = ctk.CTkFrame(c, fg_color="transparent")
+        preview_row.pack(fill="x", padx=2, pady=(4, 2))
+        preview_row.columnconfigure(0, weight=1)
+        preview_row.columnconfigure(1, weight=1)
+
+        orig_col = ctk.CTkFrame(preview_row, fg_color=CLR_BG_CARD)
+        orig_col.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        ctk.CTkLabel(
+            orig_col, text="Original", font=FONT_LABEL,
+            text_color=CLR_TEXT_HDG, anchor="center",
+        ).pack(fill="x", padx=4, pady=(4, 2))
+        self.youssra_original_canvas = tk.Canvas(
+            orig_col, bg=CLR_BG_MAIN, highlightthickness=0, bd=0, height=110,
         )
-        self.btn_save_template = self._op_btn(c, "Save Selected Template", self.save_selected_template)
-        self.btn_run_template = self._op_btn(c, "Run Template Matching", self.run_template_matching)
-        self.btn_clear_template = self._op_btn(
-            c, "Clear Template / Match Box", self.clear_template_match,
+        self.youssra_original_canvas.pack(fill="x", padx=4, pady=(0, 4))
+        self.youssra_original_canvas._photo = None
+        ctk.CTkButton(
+            orig_col, text="Upload Original", command=self.on_youssra_upload_original,
+            font=FONT_BUTTON, fg_color=CLR_CYAN, hover_color=CLR_CYAN_HOVER,
+            corner_radius=6, height=28,
+        ).pack(fill="x", padx=4, pady=(0, 6))
+
+        tmpl_col = ctk.CTkFrame(preview_row, fg_color=CLR_BG_CARD)
+        tmpl_col.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
+        ctk.CTkLabel(
+            tmpl_col, text="Template", font=FONT_LABEL,
+            text_color=CLR_TEXT_HDG, anchor="center",
+        ).pack(fill="x", padx=4, pady=(4, 2))
+        self.youssra_template_canvas = tk.Canvas(
+            tmpl_col, bg=CLR_BG_MAIN, highlightthickness=0, bd=0, height=110,
+        )
+        self.youssra_template_canvas.pack(fill="x", padx=4, pady=(0, 4))
+        self.youssra_template_canvas._photo = None
+        ctk.CTkButton(
+            tmpl_col, text="Upload Template", command=self.on_youssra_upload_template,
+            font=FONT_BUTTON, fg_color=CLR_CYAN, hover_color=CLR_CYAN_HOVER,
+            corner_radius=6, height=28,
+        ).pack(fill="x", padx=4, pady=(0, 6))
+
+        self.btn_youssra_run = self._op_btn(
+            c, "Run Fourier Template Matching", self.on_youssra_run_matching,
+        )
+        self._op_btn(
+            c, "Clear Template Match", self.on_youssra_clear,
             fg=CLR_WARNING, hover=CLR_WARNING_HVR,
         )
-        # Youssra-Phase2 END: template matching UI
+        # Youssra-Phase2 END: Frequency Template Matching UI
 
         # Author: Zeyad Khaled - Phase 2 START: Frequency / Notch Filtering UI
         c = self._make_card("Frequency Filters")
@@ -1270,10 +1289,27 @@ class UIManager:
 
     # AI-Segmentation START
     def _update_ai_info(self):
+        model_ready = "Yes" if self.ai_model is not None else "No"
+        # Bahr-AI-Video: show video frame info when video results are loaded
+        if self.ai_video_results:
+            total = len(self.ai_video_results)
+            idx   = max(0, min(self.ai_video_current_index, total - 1))
+            conf  = self.ai_video_results[idx]["confidence"]
+            fidx  = self.ai_video_results[idx]["frame_index"]
+            self.ai_info_label.configure(
+                text=(
+                    f"Model loaded: {model_ready}\n"
+                    f"Video frames: {total}\n"
+                    f"Current frame: {idx + 1}/{total}\n"
+                    f"Video frame #: {fidx}\n"
+                    f"Confidence: {conf:.3f}"
+                )
+            )
+            return
         confidence = "--" if self.ai_confidence is None else f"{self.ai_confidence:.3f}"
         self.ai_info_label.configure(
             text=(
-                f"Model loaded: {'Yes' if self.ai_model is not None else 'No'}\n"
+                f"Model loaded: {model_ready}\n"
                 f"AI image ready: {'Yes' if self.ai_image is not None else 'No'}\n"
                 f"AI model: {'Ready' if self.ai_model is not None else 'Not loaded'}\n"
                 f"AI image mode: {self.ai_image_mode or '--'}\n"
@@ -1550,10 +1586,6 @@ class UIManager:
         self.canvas.configure(scrollregion=(0, 0, img_w, img_h))
         if self._roi_rect_id is not None:
             self.canvas.tag_raise(self._roi_rect_id)
-        if self._template_rect_id is not None:
-            self.canvas.tag_raise(self._template_rect_id)
-        if self._match_box_id is not None:
-            self.canvas.tag_raise(self._match_box_id)
 
         # Reset viewport to top-left on every new result
         self.canvas.xview_moveto(0)
@@ -1595,8 +1627,6 @@ class UIManager:
         self.metadata_dict["Height"] = str(h)
         self.update_metadata_panel(self.metadata_dict)
         self.refresh_canvas(safe_copy)
-        # Youssra-Phase2: processing operations change the image, so stale template overlays are cleared.
-        self.clear_template_match(show_message=False, clear_template=True)
         return True
 
     def apply_action(self, action_func, *args, **kwargs):
@@ -1742,7 +1772,6 @@ class UIManager:
         self._set_status(f"Applying rotation ({angle:.2f} degrees) ...", "busy")
         ok = self.apply_action(spatial_engine.rotate_image, angle)
         if ok:
-            self.clear_template_match(show_message=False, clear_template=True)
             self._set_status(f"Rotation applied ({angle:.2f} degrees).", "success")
 
     def on_apply_shear(self):
@@ -1756,110 +1785,199 @@ class UIManager:
         self._set_status(f"Applying shear (x={shear_x:.2f}, y={shear_y:.2f}) ...", "busy")
         ok = self.apply_action(spatial_engine.shear_image, shear_x, shear_y)
         if ok:
-            self.clear_template_match(show_message=False, clear_template=True)
             self._set_status(f"Shear applied (x={shear_x:.2f}, y={shear_y:.2f}).", "success")
     # Youssra-Phase2 END: geometric transform UI
 
-    # Youssra-Phase2 START: template matching UI
-    def enter_template_selection_mode(self):
-        if not self._require_image():
-            return
-        self.selection_mode = "template"
-        self.template_match_label.configure(text="Mode: template selection\ndrag on image")
-        self._set_status("Template selection mode: drag a rectangle on the image.", "info")
+    # Youssra-Phase2 START: Frequency Template Matching handlers
+    def _youssra_set_canvas_image(self, canvas, image_array, photo_attr, placeholder="No image"):
+        """Render image_array on a tk.Canvas scaled to fit. None shows a placeholder text."""
+        canvas.delete("all")
+        canvas._photo = None
+        setattr(self, photo_attr, None)
 
-    def save_selected_template(self):
-        if not self._require_image():
-            return
-        if self.selected_template_roi is None:
-            self._set_status("Please select a template region first.", "warning")
-            return
+        cw = canvas.winfo_width()
+        ch = canvas.winfo_height()
+        w = cw if cw > 1 else 150
+        h = ch if ch > 1 else 110
 
-        x1, y1, x2, y2 = self.selected_template_roi
-        if x2 <= x1 or y2 <= y1:
-            self._set_status("Please select a valid template region.", "warning")
-            return
-
-        template = self.current_image_array[y1:y2, x1:x2]
-        if template.size == 0:
-            self._set_status("Please select a valid template region.", "warning")
+        if image_array is None:
+            canvas.create_text(
+                w // 2, h // 2, text=placeholder,
+                fill=CLR_TEXT_SEC, font=FONT_LABEL, justify="center",
+            )
             return
 
-        self.selected_template = template.copy()
-        self.selection_mode = "roi"
-        h, w = self.selected_template.shape[:2]
-        self.template_match_label.configure(
-            text=f"Template saved:\nSize: {w} x {h}\nMode: ROI statistics"
+        arr = np.asarray(image_array)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=255.0, neginf=0.0)
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        elif arr.ndim == 3 and arr.shape[2] == 1:
+            arr = np.repeat(arr, 3, axis=2)
+        elif arr.ndim == 3 and arr.shape[2] >= 4:
+            arr = arr[:, :, :3]
+
+        pil_img = Image.fromarray(arr)
+        iw, ih = pil_img.size
+        scale = min(w / max(1, iw), h / max(1, ih), 1.0)
+        if scale < 1.0:
+            pil_img = pil_img.resize(
+                (max(1, int(iw * scale)), max(1, int(ih * scale))), Image.LANCZOS,
+            )
+        new_photo = ImageTk.PhotoImage(image=pil_img)
+        # Anchor to both the instance attribute and canvas._photo to prevent GC
+        setattr(self, photo_attr, new_photo)
+        canvas._photo = new_photo
+        canvas.create_image(w // 2, h // 2, image=new_photo, anchor="center")
+
+    def _youssra_draw_match_box(self, result):
+        """Draw the match bounding box on the original-image preview canvas."""
+        self.youssra_original_canvas.delete("youssra_match")
+        if result is None or self.youssra_original_image is None:
+            return
+
+        x1_img, y1_img = result["top_left"]
+        x2_img, y2_img = result["bottom_right"]
+
+        # Map image coordinates → canvas display coordinates
+        img_h, img_w = self.youssra_original_image.shape[:2]
+        cw = self.youssra_original_canvas.winfo_width() or 150
+        ch = self.youssra_original_canvas.winfo_height() or 110
+        scale = min(cw / max(1, img_w), ch / max(1, img_h), 1.0)
+        disp_w = int(img_w * scale)
+        disp_h = int(img_h * scale)
+        # Origin of the image inside the canvas (centred)
+        ox = (cw - disp_w) // 2
+        oy = (ch - disp_h) // 2
+
+        cx1 = int(ox + x1_img * scale)
+        cy1 = int(oy + y1_img * scale)
+        cx2 = int(ox + x2_img * scale)
+        cy2 = int(oy + y2_img * scale)
+        self.youssra_original_canvas.create_rectangle(
+            cx1, cy1, cx2, cy2, outline=CLR_DANGER, width=2, tags="youssra_match",
         )
-        self._set_status("Template saved. ROI statistics mode restored.", "success")
 
-    def _draw_template_match_box(self, result):
-        if self._match_box_id is not None:
-            self.canvas.delete(self._match_box_id)
-            self._match_box_id = None
-
-        x1, y1 = result["top_left"]
-        x2, y2 = result["bottom_right"]
-        cx1, cy1 = self._image_to_canvas_xy(x1, y1)
-        cx2, cy2 = self._image_to_canvas_xy(x2, y2)
-        self._match_box_id = self.canvas.create_rectangle(
-            cx1, cy1, cx2, cy2,
-            outline=CLR_DANGER,
-            width=3,
+    def on_youssra_upload_original(self):
+        """Load a full medical image into the Youssra template-matching panel."""
+        path = filedialog.askopenfilename(
+            title="Select Original Medical Image",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All files", "*.*")],
         )
-        self.canvas.tag_raise(self._match_box_id)
-
-    def run_template_matching(self):
-        if not self._require_image():
+        if not path:
             return
-        if self.selected_template is None:
-            self._set_status("Please select a template first.", "warning")
+        try:
+            pil_img = Image.open(path).convert("RGB")
+            arr = np.array(pil_img, dtype=np.uint8).copy()
+        except Exception as exc:
+            self._set_status(f"Could not open image: {exc}", "error")
+            return
+
+        self.youssra_original_image = arr
+        self.youssra_match_result   = None
+        self._youssra_set_canvas_image(
+            self.youssra_original_canvas, arr,
+            "youssra_original_photo", "Original Medical Image",
+        )
+        self.youssra_status_label.configure(
+            text="Original loaded.\nUpload a template to continue.",
+        )
+        self._set_status("Youssra: original image loaded.", "success")
+
+    def on_youssra_upload_template(self):
+        """Load a cropped template image into the Youssra template-matching panel."""
+        path = filedialog.askopenfilename(
+            title="Select Cropped Template Image",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            pil_img = Image.open(path).convert("RGB")
+            arr = np.array(pil_img, dtype=np.uint8).copy()
+        except Exception as exc:
+            self._set_status(f"Could not open template: {exc}", "error")
+            return
+
+        self.youssra_template_image = arr
+        self.youssra_match_result   = None
+        h, w = arr.shape[:2]
+        self._youssra_set_canvas_image(
+            self.youssra_template_canvas, arr,
+            "youssra_template_photo", "Cropped Template",
+        )
+        self.youssra_status_label.configure(
+            text=f"Template loaded: {w}×{h}px\nReady to run matching.",
+        )
+        self._set_status("Youssra: template image loaded.", "success")
+
+    def on_youssra_run_matching(self):
+        """Run Fourier-domain cross-correlation and display the match bounding box."""
+        if self.youssra_original_image is None:
+            self._set_status("Upload an original image first.", "warning")
+            return
+        if self.youssra_template_image is None:
+            self._set_status("Upload a template image first.", "warning")
             return
 
         self._set_status("Running Fourier template matching ...", "busy")
         try:
             result = frequency_engine.template_matching_fourier(
-                self.current_image_array,
-                self.selected_template,
+                self.youssra_original_image,
+                self.youssra_template_image,
             )
-        except ValueError as e:
-            self._set_status(str(e), "warning")
+        except ValueError as exc:
+            self._set_status(str(exc), "warning")
             return
-        except Exception as e:
-            self._set_status(f"Template matching error: {str(e)[:60]}", "error")
+        except Exception as exc:
+            self._set_status(f"Template matching error: {str(exc)[:80]}", "error")
             return
 
-        self.last_template_match = result
-        self._draw_template_match_box(result)
+        self.youssra_match_result = result
+        # Re-render original canvas then draw the match box on top
+        self._youssra_set_canvas_image(
+            self.youssra_original_canvas,
+            self.youssra_original_image,
+            "youssra_original_photo",
+            "Original Medical Image",
+        )
+        self._youssra_draw_match_box(result)
+
         x1, y1 = result["top_left"]
         x2, y2 = result["bottom_right"]
-        self.template_match_label.configure(
+        tw, th = x2 - x1, y2 - y1
+        self.youssra_status_label.configure(
             text=(
-                f"Match box:\n"
-                f"({x1}, {y1}) to ({x2}, {y2})\n"
-                f"Score: {result['score']:.2f}"
-            )
+                f"Match found:\n"
+                f"Top-left:  ({x1}, {y1})\n"
+                f"Bot-right: ({x2}, {y2})\n"
+                f"Size: {tw}×{th}px\n"
+                f"Score: {result['score']:.1f}"
+            ),
         )
-        self._set_status("Template match complete. Bounding box displayed.", "success")
+        self._set_status(
+            f"Template match: ({x1},{y1})→({x2},{y2}), score={result['score']:.1f}",
+            "success",
+        )
 
-    def clear_template_match(self, show_message=True, clear_template=True):
-        self.selected_template_roi = None
-        self.last_template_match = None
-        self._template_drag_start = None
-        if clear_template:
-            self.selected_template = None
-        if self._template_rect_id is not None:
-            self.canvas.delete(self._template_rect_id)
-            self._template_rect_id = None
-        if self._match_box_id is not None:
-            self.canvas.delete(self._match_box_id)
-            self._match_box_id = None
-        self.selection_mode = "roi"
-        if hasattr(self, "template_match_label"):
-            self.template_match_label.configure(text="Mode: ROI statistics")
-        if show_message:
-            self._set_status("Template selection and match box cleared.", "info")
-    # Youssra-Phase2 END: template matching UI
+    def on_youssra_clear(self):
+        """Clear both uploaded images and the match result."""
+        self.youssra_original_image = None
+        self.youssra_template_image = None
+        self.youssra_match_result   = None
+        self._youssra_set_canvas_image(
+            self.youssra_original_canvas, None,
+            "youssra_original_photo", "Original Medical Image",
+        )
+        self._youssra_set_canvas_image(
+            self.youssra_template_canvas, None,
+            "youssra_template_photo", "Cropped Template",
+        )
+        self.youssra_status_label.configure(
+            text="Upload original & template\nthen run matching.",
+        )
+        self._set_status("Youssra template matching cleared.", "info")
+    # Youssra-Phase2 END: Frequency Template Matching handlers
 
     # Bahr-Phase2
     def clear_roi(self, show_message=True):
@@ -2238,7 +2356,11 @@ class UIManager:
         self.ai_image_mode = None
         self.ai_rgb_file_path = None
         self.ai_image_was_grayscale = False
-        self.ai_video_results = []
+        # Bahr-AI-Video: stop playback and clear all video state
+        self._ai_video_stop_playback()
+        self.ai_video_path          = None
+        self.ai_video_results       = []
+        self.ai_video_current_index = 0
 
         # ── Visual reset — _set_ai_preview calls canvas.delete("all") first, ────
         # which removes the Tk image reference before Python refs are released.
@@ -2275,6 +2397,294 @@ class UIManager:
             self._set_ai_status("AI overlay applied to pipeline.", "success")
     # AI-Segmentation END
 
+    # Bahr-AI-Video START
+    def _ai_video_stop_playback(self):
+        """Cancel the scheduled playback after() loop and reset play/pause state."""
+        self.ai_video_is_playing = False
+        if self.ai_video_after_id is not None:
+            try:
+                self.master.after_cancel(self.ai_video_after_id)
+            except Exception:
+                pass
+            self.ai_video_after_id = None
+        if hasattr(self, "btn_ai_video_play"):
+            self.btn_ai_video_play.configure(
+                text="▶ Play", fg_color=CLR_SUCCESS, hover_color=CLR_SUCCESS_HVR,
+            )
+
+    def _ai_video_display_frame(self, idx):
+        """Render original / overlay / mask for a single processed video frame."""
+        if not self.ai_video_results:
+            return
+        idx = max(0, min(idx, len(self.ai_video_results) - 1))
+        self.ai_video_current_index = idx
+        frame_data = self.ai_video_results[idx]
+        total = len(self.ai_video_results)
+
+        self._set_ai_preview("original", frame_data["original"], "No AI image loaded")
+        self._set_ai_preview("overlay",  frame_data["overlay"],  "Overlay preview")
+        self._set_ai_preview("mask",     frame_data["mask"],      "Mask preview")
+
+        confidence = frame_data["confidence"]
+        frame_index = frame_data["frame_index"]
+        self._update_ai_info()
+        self._set_ai_diagnosis(
+            f"Video Segmentation — Frame {idx + 1} / {total}\n"
+            f"Original video frame #: {frame_index}\n"
+            f"Confidence: {confidence:.3f}\n\n"
+            "Use ▶ Play/Pause, ◀ Prev, Next ▶ to navigate.\n\n"
+            "Note: Video segmentation processes selected frames using\n"
+            "frame_step to avoid freezing and memory overload."
+        )
+        self.ai_status_label.configure(
+            text=f"Frame {idx + 1}/{total}  |  Conf: {confidence:.3f}",
+            text_color=CLR_AI_ACCENT,
+        )
+
+    def _ai_video_playback_step(self):
+        """One tick of the after()-based playback loop — advance one frame, reschedule."""
+        if not self.ai_video_is_playing or not self.ai_video_results:
+            self._ai_video_stop_playback()
+            return
+        next_idx = self.ai_video_current_index + 1
+        if next_idx >= len(self.ai_video_results):
+            self._ai_video_stop_playback()
+            self._set_ai_status("Video playback finished.", "info")
+            return
+        self._ai_video_display_frame(next_idx)
+        # ~150 ms per processed frame gives a smooth preview without overwhelming the UI
+        self.ai_video_after_id = self.master.after(150, self._ai_video_playback_step)
+
+    def on_ai_upload_video(self):
+        """Load a video file path and display its metadata in the AI tab."""
+        path = filedialog.askopenfilename(
+            title="Select AI Video",
+            filetypes=[
+                ("Video Files", "*.mp4 *.avi *.mov *.mkv"),
+                ("MP4", "*.mp4"),
+                ("AVI", "*.avi"),
+                ("MOV", "*.mov"),
+                ("MKV", "*.mkv"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        self._ai_video_stop_playback()
+        self.ai_video_path          = path
+        self.ai_video_results       = []
+        self.ai_video_current_index = 0
+
+        # Clear stale image-AI state so previews are blank until Analyze Video runs
+        self.ai_image        = None
+        self.ai_mask         = None
+        self.ai_overlay      = None
+        self.ai_confidence   = None
+        self.ai_display_mode = None
+        self._set_ai_preview("original", None)
+        self._set_ai_preview("overlay",  None)
+        self._set_ai_preview("mask",     None)
+
+        meta     = ai_segmentation_engine.get_video_metadata(path)
+        filename = meta.get("filename", os.path.basename(path))
+        fc       = meta.get("frame_count", "?")
+        fps_val  = meta.get("fps", None)
+        fw       = meta.get("width", "?")
+        fh       = meta.get("height", "?")
+        err      = meta.get("error", None)
+
+        fps_str = f"{fps_val:.2f}" if isinstance(fps_val, float) else str(fps_val or "?")
+
+        if err:
+            diag = (
+                f"Video loaded: {filename}\n"
+                f"Warning: {err}\n\n"
+                "Try Analyze Video anyway."
+            )
+        else:
+            diag = (
+                f"AI video loaded: {filename}\n"
+                f"Frames: {fc}\n"
+                f"FPS: {fps_str}\n"
+                f"Size: {fw} x {fh} px\n\n"
+                "Set frame_step and max_frames, then click Analyze Video.\n\n"
+                "Note: Video segmentation processes selected frames using\n"
+                "frame_step to avoid freezing and memory overload."
+            )
+
+        self._update_ai_info()
+        self._set_ai_diagnosis(diag)
+        self._set_ai_status("AI video loaded.", "success")
+
+    def on_ai_analyze_video(self):
+        """Run polyp segmentation on all selected frames of the loaded video."""
+        if not self.ai_video_path:
+            self._set_ai_status("Upload a video first.", "warning")
+            return
+        if not self._ensure_ai_model_loaded():
+            return
+
+        try:
+            frame_step = int(self.ai_video_frame_step_entry.get() or "5")
+            if frame_step <= 0:
+                raise ValueError
+        except (ValueError, AttributeError):
+            frame_step = 5
+
+        try:
+            max_frames = int(self.ai_video_max_frames_entry.get() or "50")
+            if max_frames <= 0:
+                raise ValueError
+        except (ValueError, AttributeError):
+            max_frames = 50
+
+        threshold = self.ai_threshold_var.get() if hasattr(self, "ai_threshold_var") else 0.5
+
+        self._ai_video_stop_playback()
+        self.ai_video_results       = []
+        self.ai_video_current_index = 0
+
+        self._set_ai_status("Processing video frames...", "busy")
+        self._set_ai_diagnosis(
+            f"Processing video...\n"
+            f"frame_step={frame_step},  max_frames={max_frames},  threshold={threshold:.2f}\n\n"
+            "Please wait — inference runs frame by frame.\n\n"
+            "Note: Video segmentation processes selected frames using\n"
+            "frame_step to avoid freezing and memory overload."
+        )
+        self.master.update_idletasks()
+
+        def progress_cb(current, total):
+            self._set_ai_status(f"Processing frame {current}/{total}...", "busy")
+            self.master.update_idletasks()
+
+        try:
+            results = ai_segmentation_engine.segment_video_frames(
+                self.ai_video_path,
+                model_path=self.ai_model_path,
+                frame_step=frame_step,
+                max_frames=max_frames,
+                threshold=threshold,
+                progress_callback=progress_cb,
+            )
+        except Exception as exc:
+            self._set_ai_status("Video segmentation failed.", "error")
+            messagebox.showerror("AI Video Segmentation", str(exc))
+            return
+
+        if not results:
+            self._set_ai_status("No frames were processed.", "warning")
+            return
+
+        self.ai_video_results = results
+        total = len(results)
+        self._ai_video_display_frame(0)
+
+        self._set_ai_status(f"Video segmentation completed: {total} frames processed.", "success")
+        self._set_ai_diagnosis(
+            f"Video Segmentation Complete\n"
+            f"Frames processed: {total}\n"
+            f"frame_step: {frame_step}\n"
+            f"max_frames: {max_frames}\n"
+            f"Threshold: {threshold:.2f}\n\n"
+            "Use ▶ Play/Pause, ◀ Prev, Next ▶ to navigate frames.\n"
+            "Use Save Video Result to export the overlay as MP4 or single PNG.\n\n"
+            "Note: Video segmentation processes selected frames using\n"
+            "frame_step to avoid freezing and memory overload."
+        )
+
+    def on_ai_video_play_pause(self):
+        """Toggle between playing and pausing the segmented video preview."""
+        if not self.ai_video_results:
+            self._set_ai_status("Analyze a video first.", "warning")
+            return
+        if self.ai_video_is_playing:
+            self._ai_video_stop_playback()
+            self._set_ai_status("Playback paused.", "info")
+        else:
+            if self.ai_video_current_index >= len(self.ai_video_results) - 1:
+                self.ai_video_current_index = 0  # restart from beginning
+            self.ai_video_is_playing = True
+            self.btn_ai_video_play.configure(
+                text="⏸ Pause", fg_color=CLR_WARNING, hover_color=CLR_WARNING_HVR,
+            )
+            self._ai_video_playback_step()
+            self._set_ai_status("Playback started.", "info")
+
+    def on_ai_video_next_frame(self):
+        """Advance to the next processed video frame."""
+        if not self.ai_video_results:
+            self._set_ai_status("Analyze a video first.", "warning")
+            return
+        self._ai_video_stop_playback()
+        self._ai_video_display_frame(self.ai_video_current_index + 1)
+
+    def on_ai_video_prev_frame(self):
+        """Go back to the previous processed video frame."""
+        if not self.ai_video_results:
+            self._set_ai_status("Analyze a video first.", "warning")
+            return
+        self._ai_video_stop_playback()
+        self._ai_video_display_frame(self.ai_video_current_index - 1)
+
+    def on_ai_save_video_result(self):
+        """Save the current overlay frame as PNG, or all frames as an MP4 video."""
+        if not self.ai_video_results:
+            self._set_ai_status("No video results to save.", "warning")
+            return
+
+        choice = messagebox.askquestion(
+            "Save Video Result",
+            "Save full segmented video as MP4?\n\n"
+            "Yes = Save all overlay frames as MP4 video\n"
+            "No  = Save only the current frame as PNG",
+            icon="question",
+        )
+
+        if choice == "yes":
+            path = filedialog.asksaveasfilename(
+                title="Save Segmented Video",
+                defaultextension=".mp4",
+                filetypes=[
+                    ("MP4 Video", "*.mp4"),
+                    ("AVI Video", "*.avi"),
+                    ("All Files", "*.*"),
+                ],
+            )
+            if not path:
+                return
+            try:
+                meta     = ai_segmentation_engine.get_video_metadata(self.ai_video_path) if self.ai_video_path else {}
+                orig_fps = meta.get("fps", None)
+                ai_segmentation_engine.save_video_result(
+                    self.ai_video_results, path, fps=None, original_fps=orig_fps,
+                )
+                self._set_ai_status("Video saved.", "success")
+                messagebox.showinfo("Video Saved", f"Saved segmented video to:\n{path}")
+            except Exception as exc:
+                self._set_ai_status("Video save failed.", "error")
+                messagebox.showerror("Save Video", str(exc))
+        else:
+            frame_data   = self.ai_video_results[self.ai_video_current_index]
+            default_name = f"polyp_frame_{frame_data['frame_index']:04d}_overlay.png"
+            path = filedialog.asksaveasfilename(
+                title="Save Current Frame",
+                defaultextension=".png",
+                initialfile=default_name,
+                filetypes=[("PNG", "*.png"), ("All Files", "*.*")],
+            )
+            if not path:
+                return
+            try:
+                Image.fromarray(np.asarray(frame_data["overlay"]).astype(np.uint8)).save(path)
+                self._set_ai_status("Frame saved.", "success")
+                messagebox.showinfo("Frame Saved", f"Saved frame to:\n{path}")
+            except Exception as exc:
+                self._set_ai_status("Frame save failed.", "error")
+                messagebox.showerror("Save Frame", str(exc))
+    # Bahr-AI-Video END
+
     def on_load_image(self):
         path = filedialog.askopenfilename(
             title="Select Medical Image",
@@ -2299,9 +2709,6 @@ class UIManager:
             self.redo_history         = []
             self.metadata_dict        = metadata
             self.clear_roi(show_message=False)
-            # Youssra-Phase2: a new image invalidates any saved template or match box.
-            self.clear_template_match(show_message=False, clear_template=True)
-
             self.refresh_canvas(self.current_image_array)
             self.update_metadata_panel(self.metadata_dict)
             self._set_status("Image loaded successfully.", "success")
@@ -2694,9 +3101,6 @@ class UIManager:
         self.image_history       = [self.original_image_array.copy()]  # ← spec: fresh history
         self.redo_history        = []
         self.clear_roi(show_message=False)
-        # Youssra-Phase2: reset restores a different image state, so template overlays are cleared.
-        self.clear_template_match(show_message=False, clear_template=True)
-
         h, w = self.current_image_array.shape[:2]
         self.metadata_dict["Width"]  = str(w)
         self.metadata_dict["Height"] = str(h)
